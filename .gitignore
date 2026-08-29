@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+plugin/build/
+out/
+models/
+mutations/
+*.log
+.DS_Store
+samples/
+*.wav
+*.aiff
+*.flac

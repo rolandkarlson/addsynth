@@ -1,0 +1,264 @@
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+static constexpr int kNumVoices = 8;
+
+AddSynthProcessor::AddSynthProcessor()
+    : AudioProcessor (BusesProperties()
+          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts (*this, nullptr, "params", makeLayout())
+{
+    synth.addSound (new AddSound());
+    for (int i = 0; i < kNumVoices; ++i)
+    {
+        auto* v = new AddVoice();
+        v->setNoteCounter (&noteCounter);
+        synth.addVoice (v);
+    }
+}
+
+juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayout()
+{
+    using P = juce::AudioParameterFloat;
+    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+    layout.add (std::make_unique<P> ("gain", "Gain",
+        juce::NormalisableRange<float> (0.0f, 1.5f, 0.001f, 0.5f), 0.5f));
+    layout.add (std::make_unique<P> ("noise", "Noise",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.5f), 1.0f));
+    layout.add (std::make_unique<P> ("release", "Release",
+        juce::NormalisableRange<float> (0.005f, 2.0f, 0.001f, 0.4f), 0.08f));
+    layout.add (std::make_unique<P> ("morphX", "Morph X",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.0001f), 0.5f));
+    layout.add (std::make_unique<P> ("morphY", "Morph Y",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.0001f), 0.5f));
+
+    auto speedRange = juce::NormalisableRange<float> (0.0f, 8.0f, 0.001f);
+    speedRange.setSkewForCentre (1.0f);
+    layout.add (std::make_unique<P> ("speed", "Speed", speedRange, 1.0f));
+    layout.add (std::make_unique<P> ("blur", "Blur",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.0f));
+    layout.add (std::make_unique<P> ("attack", "Attack",
+        juce::NormalisableRange<float> (0.001f, 2.0f, 0.001f, 0.4f), 0.001f));
+    layout.add (std::make_unique<P> ("tilt", "Tilt",
+        juce::NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f));
+    layout.add (std::make_unique<P> ("oddeven", "Odd/Even",
+        juce::NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<P> ("stretch", "Stretch",
+        juce::NormalisableRange<float> (0.0f, 0.02f, 0.00001f, 0.3f), 0.0f));
+    layout.add (std::make_unique<P> ("partials", "Partials",
+        juce::NormalisableRange<float> (1.0f, 128.0f, 0.1f, 0.5f), 128.0f));
+    layout.add (std::make_unique<P> ("drift", "Drift",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<P> ("pitchenv", "Pitch Env",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f), 1.0f));
+    layout.add (std::make_unique<P> ("spreadx", "Spread X",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<P> ("spready", "Spread Y",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        "spreadn", "Spread N", 1, 8, 5));
+
+    layout.add (std::make_unique<P> ("bend", "Bend",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.05f));
+    layout.add (std::make_unique<P> ("width", "Width",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.35f));
+    static const char* noteNames[12] = { "C", "C#", "D", "D#", "E", "F",
+                                         "F#", "G", "G#", "A", "A#", "B" };
+    for (int i = 0; i < 12; ++i)
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            "key" + juce::String (i),
+            juce::String ("Scale ") + noteNames[i], false));
+    return layout;
+}
+
+void AddSynthProcessor::prepareToPlay (double sampleRate, int)
+{
+    synth.setCurrentPlaybackSampleRate (sampleRate);
+}
+
+void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
+                                      juce::MidiBuffer& midi)
+{
+    juce::ScopedNoDenormals noDenormals;
+    buffer.clear();
+
+    std::shared_ptr<const MorphField> f;
+    {
+        juce::SpinLock::ScopedLockType sl (fieldLock);
+        f = field;
+    }
+
+    AddVoice::Params p;
+    auto get = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
+    p.noise = get ("noise");
+    p.release = get ("release");
+    p.attack = get ("attack");
+    p.speed = get ("speed");
+    p.blur = get ("blur");
+    p.tiltDbOct = get ("tilt");
+    p.oddEven = get ("oddeven");
+    p.stretchB = get ("stretch");
+    p.partials = get ("partials");
+    p.drift = get ("drift");
+    p.pitchEnvAmt = get ("pitchenv");
+    p.cursorX = get ("morphX");
+    p.cursorY = get ("morphY");
+    p.spreadX = get ("spreadx");
+    p.spreadY = get ("spready");
+    p.spreadN = (int) get ("spreadn");
+    p.bend = get ("bend");
+    p.width = get ("width");
+    p.keyMask = 0;
+    for (int i = 0; i < 12; ++i)
+        if (apvts.getRawParameterValue ("key" + juce::String (i))->load() > 0.5f)
+            p.keyMask |= (juce::uint16) (1u << i);
+
+    bool anyActive = false;
+    for (int i = 0; i < synth.getNumVoices(); ++i)
+    {
+        auto* voice = synth.getVoice (i);
+        anyActive = anyActive || voice->isVoiceActive();
+        if (auto* v = dynamic_cast<AddVoice*> (voice))
+        {
+            v->setField (f);
+            v->setParams (p);
+        }
+    }
+    if (! anyActive)
+        noteCounter.store (0);  // first note of a phrase is always voice 0
+
+    synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
+
+    buffer.applyGain (apvts.getRawParameterValue ("gain")->load());
+}
+
+std::vector<std::pair<float, float>> AddSynthProcessor::getActiveVoiceCursors() const
+{
+    std::vector<std::pair<float, float>> out;
+    for (int i = 0; i < synth.getNumVoices(); ++i)
+        if (auto* v = dynamic_cast<const AddVoice*> (synth.getVoice (i)))
+        {
+            float x, y;
+            if (v->getDisplayCursor (x, y))
+                out.emplace_back (x, y);
+        }
+    return out;
+}
+
+// ---- morph pad management (message thread) --------------------------------
+
+void AddSynthProcessor::rebuildField()
+{
+    std::vector<MorphField::Placement> placements;
+    for (auto& s : slots)
+        if (s.model != nullptr)
+            placements.push_back ({ s.model, s.x, s.y });
+    auto newField = MorphField::build (placements);
+
+    // notes already playing keep their old snapshot; new notes get this one
+    juce::SpinLock::ScopedLockType sl (fieldLock);
+    field = newField;
+}
+
+bool AddSynthProcessor::addModel (const juce::File& f, float x, float y,
+                                  juce::String& error)
+{
+    if ((int) slots.size() >= MorphField::maxLayers)
+    {
+        error = "pad is full";
+        return false;
+    }
+    auto m = AddmModel::load (f, error);
+    if (m == nullptr)
+        return false;
+    slots.push_back ({ f.getFullPathName(), m->name,
+                       juce::jlimit (0.0f, 1.0f, x),
+                       juce::jlimit (0.0f, 1.0f, y), m });
+    lastModelDir = f.getParentDirectory();
+    rebuildField();
+    return true;
+}
+
+void AddSynthProcessor::removeSlot (int index)
+{
+    if (index < 0 || index >= (int) slots.size()) return;
+    slots.erase (slots.begin() + index);
+    rebuildField();
+}
+
+void AddSynthProcessor::moveSlot (int index, float x, float y)
+{
+    if (index < 0 || index >= (int) slots.size()) return;
+    slots[(size_t) index].x = juce::jlimit (0.0f, 1.0f, x);
+    slots[(size_t) index].y = juce::jlimit (0.0f, 1.0f, y);
+    rebuildField();
+}
+
+// ---- state -----------------------------------------------------------------
+
+void AddSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
+{
+    juce::ValueTree root ("AddSynthState");
+    root.appendChild (apvts.copyState(), nullptr);
+    juce::ValueTree st ("slots");
+    for (auto& s : slots)
+    {
+        juce::ValueTree v ("slot");
+        v.setProperty ("path", s.path, nullptr);
+        v.setProperty ("x", s.x, nullptr);
+        v.setProperty ("y", s.y, nullptr);
+        st.appendChild (v, nullptr);
+    }
+    root.appendChild (st, nullptr);
+    juce::MemoryOutputStream out (dest, false);
+    root.writeToStream (out);
+}
+
+void AddSynthProcessor::setStateInformation (const void* data, int size)
+{
+    auto root = juce::ValueTree::readFromData (data, (size_t) size);
+    if (! root.isValid())
+        return;
+
+    juce::ValueTree params, slotTree;
+    if (root.hasType ("AddSynthState"))
+    {
+        params = root.getChildWithName ("params");
+        slotTree = root.getChildWithName ("slots");
+    }
+    else if (root.hasType ("params"))  // legacy single-model state
+    {
+        params = root;
+    }
+    if (params.isValid())
+        apvts.replaceState (params);
+
+    slots.clear();
+    if (slotTree.isValid())
+    {
+        for (auto v : slotTree)
+        {
+            juce::File f (v.getProperty ("path").toString());
+            juce::String err;
+            addModel (f, (float) v.getProperty ("x", 0.5f),
+                         (float) v.getProperty ("y", 0.5f), err);
+        }
+    }
+    else if (params.hasProperty ("modelPath"))  // legacy
+    {
+        juce::String err;
+        addModel (juce::File (params.getProperty ("modelPath").toString()),
+                  0.5f, 0.5f, err);
+    }
+    rebuildField();
+}
+
+juce::AudioProcessorEditor* AddSynthProcessor::createEditor()
+{
+    return new AddSynthEditor (*this);
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new AddSynthProcessor();
+}

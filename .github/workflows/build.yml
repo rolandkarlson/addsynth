@@ -1,0 +1,64 @@
+name: build plugins
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: cmake -B plugin/build -S plugin -G "Visual Studio 17 2022" -A x64 -DADDSYNTH_COPY_PLUGIN=OFF
+
+      - name: build
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_Standalone
+
+      - name: package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item -Recurse "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
+          Copy-Item "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.exe" dist/
+          @"
+          AddSynth (Windows)
+          ==================
+          1. Copy the AddSynth.vst3 FOLDER into:
+             C:\Program Files\Common Files\VST3\
+          2. Rescan plugins in your DAW (Ableton: Options > Preferences >
+             Plug-Ins > Rescan). Find "AddSynth" by SynthIdeas.
+          AddSynth.exe runs standalone without a DAW (pick your audio/MIDI
+          device in its options button).
+          Click "add models..." and load .addm model files.
+          "@ | Set-Content dist/README.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AddSynth-Windows
+          path: dist/
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: cmake -B plugin/build -S plugin -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DADDSYNTH_COPY_PLUGIN=OFF
+
+      - name: build
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_AU AddSynth_Standalone -j3
+
+      - name: package
+        run: |
+          mkdir -p dist
+          cp -R "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
+          cp -R "plugin/build/AddSynth_artefacts/Release/AU/AddSynth.component" dist/
+          cp -R "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.app" dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AddSynth-macOS
+          path: dist/
