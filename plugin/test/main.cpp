@@ -34,6 +34,7 @@ int main (int argc, char** argv)
     std::vector<std::shared_ptr<const AddmModel>> models;
     AddVoice::Params params;
     bool chord = false;
+    double lfo1Hz = 0.0, lfo2Hz = 0.0;
     for (int i = 1; i < argc; ++i)
     {
         juce::String arg (argv[i]);
@@ -41,8 +42,23 @@ int main (int argc, char** argv)
         if (arg.contains ("="))
         {
             auto key = arg.upToFirstOccurrenceOf ("=", false, false);
-            auto val = arg.fromFirstOccurrenceOf ("=", false, false).getFloatValue();
+            auto valStr = arg.fromFirstOccurrenceOf ("=", false, false);
+            if (key.startsWith ("mod") && key.length() == 4)
+            {
+                int idx = key.substring (3).getIntValue();
+                auto t = juce::StringArray::fromTokens (valStr, ",", "");
+                if (idx >= 0 && idx < AddVoice::Params::nModSlots && t.size() == 3)
+                {
+                    params.modSrc[idx] = t[0].getIntValue();
+                    params.modDst[idx] = t[1].getIntValue();
+                    params.modAmt[idx] = t[2].getFloatValue();
+                    continue;
+                }
+            }
+            auto val = valStr.getFloatValue();
             if      (key == "chord")    chord = val > 0.5f;
+            else if (key == "lfo1")     lfo1Hz = val;
+            else if (key == "lfo2")     lfo2Hz = val;
             else if (key == "keys")     params.keyMask = (juce::uint16) val;
             else if (key == "bend")     params.bend = val;
             else if (key == "width")    params.width = val;
@@ -133,6 +149,10 @@ int main (int argc, char** argv)
         double tBlockStart = pos / sr;
 
         auto p = params;
+        p.lfo1 = (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                   * lfo1Hz * tBlockStart);
+        p.lfo2 = (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                   * lfo2Hz * tBlockStart);
         // sequential-notes mode steps the cursor left->right per note
         int noteIdx = (int) (tBlockStart / 2.5);
         p.cursorX = (chord || notes == 1) ? 0.5f

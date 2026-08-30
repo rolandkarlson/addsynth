@@ -84,6 +84,14 @@ Ableton. Pad layout is saved with the session.
   cycles the region [pos, pos+len]; release plays out past the loop
   naturally. Len 0 = one-shot (default). Click-free (phase is continuous),
   and a region running past the envelope end wraps around through the start.
+- **mod matrix** (bottom strip) — 6 slots of source -> amount -> destination.
+  Sources: lfo 1/2 (rate knobs beside the slots), env pos (where the note is
+  in the model's timeline — the model modulates itself), voice idx
+  (generalized spread), random-per-note, velocity, note (key tracking).
+  Destinations: morph x/y, tilt, blur, speed, noise, width, stretch,
+  odd/even, partials, pitch, loop pos. Everything is applied at control
+  rate through the smoothed additive engine — partials above Nyquist stay
+  muted, so modulation can't alias.
 - *loop sync* checkbox — Loop Len picks musical lengths (1/4..16 beats) at
   the host tempo, compensated for Speed so the audible loop stays on grid.
 - *speed sync* checkbox — Speed means "scan the whole envelope in N bars"

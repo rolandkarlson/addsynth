@@ -70,6 +70,26 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         "syncloop", "Loop Sync", false));
     layout.add (std::make_unique<juce::AudioParameterBool> (
         "syncspeed", "Speed Sync", false));
+
+    layout.add (std::make_unique<P> ("lfo1rate", "LFO 1 Rate",
+        juce::NormalisableRange<float> (0.02f, 20.0f, 0.001f, 0.3f), 0.5f));
+    layout.add (std::make_unique<P> ("lfo2rate", "LFO 2 Rate",
+        juce::NormalisableRange<float> (0.02f, 20.0f, 0.001f, 0.3f), 0.13f));
+    const juce::StringArray modSources { "off", "lfo 1", "lfo 2", "env pos",
+        "voice idx", "random", "velocity", "note" };
+    const juce::StringArray modDests { "morph x", "morph y", "tilt", "blur",
+        "speed", "noise", "width", "stretch", "odd/even", "partials",
+        "pitch", "loop pos" };
+    for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
+    {
+        auto n = juce::String (i);
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            "mod" + n + "src", "Mod " + n + " Source", modSources, 0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            "mod" + n + "dst", "Mod " + n + " Dest", modDests, 0));
+        layout.add (std::make_unique<P> ("mod" + n + "amt", "Mod " + n + " Amount",
+            juce::NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
+    }
     static const char* noteNames[12] = { "C", "C#", "D", "D#", "E", "F",
                                          "F#", "G", "G#", "A", "A#", "B" };
     for (int i = 0; i < 12; ++i)
@@ -120,6 +140,20 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.loopLen = get ("looplen");
     p.syncLoop = get ("syncloop") > 0.5f;
     p.syncSpeed = get ("syncspeed") > 0.5f;
+    for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
+    {
+        auto n = juce::String (i);
+        p.modSrc[i] = (int) get (("mod" + n + "src").toRawUTF8());
+        p.modDst[i] = (int) get (("mod" + n + "dst").toRawUTF8());
+        p.modAmt[i] = get (("mod" + n + "amt").toRawUTF8());
+    }
+    // global LFOs advance per block; voices read the current values
+    double srate = getSampleRate() > 0 ? getSampleRate() : 44100.0;
+    double dt = buffer.getNumSamples() / srate;
+    lfoPhase1 = std::fmod (lfoPhase1 + dt * get ("lfo1rate"), 1.0);
+    lfoPhase2 = std::fmod (lfoPhase2 + dt * get ("lfo2rate"), 1.0);
+    p.lfo1 = (float) std::sin (lfoPhase1 * juce::MathConstants<double>::twoPi);
+    p.lfo2 = (float) std::sin (lfoPhase2 * juce::MathConstants<double>::twoPi);
     p.bpm = 120.0f;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())

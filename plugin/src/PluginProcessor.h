@@ -59,6 +59,7 @@ private:
 
     juce::Synthesiser synth;
     std::atomic<int> noteCounter { 0 };
+    double lfoPhase1 = 0.0, lfoPhase2 = 0.25;
 
     std::vector<Slot> slots;
     juce::File lastModelDir;

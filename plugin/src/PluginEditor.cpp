@@ -13,6 +13,13 @@ AddLookAndFeel::AddLookAndFeel()
     setColour (juce::TextButton::textColourOffId, theme::ink);
     setColour (juce::PopupMenu::backgroundColourId, theme::pill);
     setColour (juce::PopupMenu::textColourId, theme::ink);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId,
+               theme::accent.withAlpha (0.35f));
+    setColour (juce::PopupMenu::highlightedTextColourId, theme::ink);
+    setColour (juce::ComboBox::backgroundColourId, theme::pill);
+    setColour (juce::ComboBox::textColourId, theme::ink);
+    setColour (juce::ComboBox::outlineColourId, theme::ink.withAlpha (0.3f));
+    setColour (juce::ComboBox::arrowColourId, theme::ink);
 }
 
 void AddLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y,
@@ -392,7 +399,58 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     syncSpeedA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         proc.apvts, "syncspeed", syncSpeedBtn);
 
-    setSize (900, 566);
+    // ---- modulation matrix strip ----
+    auto fillCombo = [] (juce::ComboBox& c, const juce::StringArray& items)
+    {
+        int id = 1;
+        for (auto& it : items) c.addItem (it, id++);
+    };
+    const juce::StringArray srcItems { "off", "lfo 1", "lfo 2", "env pos",
+        "voice idx", "random", "velocity", "note" };
+    const juce::StringArray dstItems { "morph x", "morph y", "tilt", "blur",
+        "speed", "noise", "width", "stretch", "odd/even", "partials",
+        "pitch", "loop pos" };
+    for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
+    {
+        auto row = std::make_unique<ModRow>();
+        fillCombo (row->src, srcItems);
+        fillCombo (row->dst, dstItems);
+        addAndMakeVisible (row->src);
+        addAndMakeVisible (row->dst);
+        row->amt.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        row->amt.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        row->amt.setPopupDisplayEnabled (true, true, this);
+        addAndMakeVisible (row->amt);
+        auto n = juce::String (i);
+        row->srcA = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+            proc.apvts, "mod" + n + "src", row->src);
+        row->dstA = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+            proc.apvts, "mod" + n + "dst", row->dst);
+        row->amtA = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            proc.apvts, "mod" + n + "amt", row->amt);
+        modRows.push_back (std::move (row));
+    }
+    for (auto* k : { &lfo1Knob, &lfo2Knob })
+    {
+        k->slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        k->slider.setColour (juce::Slider::textBoxTextColourId, theme::ink);
+        k->slider.setColour (juce::Slider::textBoxBackgroundColourId, theme::pill);
+        k->slider.setColour (juce::Slider::textBoxOutlineColourId,
+                             juce::Colours::transparentBlack);
+        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 58, 16);
+        addAndMakeVisible (k->slider);
+        k->label.setFont (theme::font (13.0f));
+        k->label.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (k->label);
+    }
+    lfo1Knob.label.setText ("lfo 1 hz", juce::dontSendNotification);
+    lfo2Knob.label.setText ("lfo 2 hz", juce::dontSendNotification);
+    lfo1Knob.attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        proc.apvts, "lfo1rate", lfo1Knob.slider);
+    lfo2Knob.attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        proc.apvts, "lfo2rate", lfo2Knob.slider);
+
+    setSize (900, 700);
 }
 
 AddSynthEditor::~AddSynthEditor()
@@ -439,6 +497,15 @@ void AddSynthEditor::paint (juce::Graphics& g)
     g.setColour (theme::ink.withAlpha (0.15f));
     g.drawRoundedRectangle (sidePanelArea.toFloat().reduced (0.5f), 10.0f, 1.0f);
 
+    g.setColour (theme::panel);
+    g.fillRoundedRectangle (modPanelArea.toFloat(), 10.0f);
+    g.setColour (theme::ink.withAlpha (0.15f));
+    g.drawRoundedRectangle (modPanelArea.toFloat().reduced (0.5f), 10.0f, 1.0f);
+    g.setColour (theme::ink.withAlpha (0.5f));
+    g.setFont (theme::font (12.0f));
+    g.drawText ("mod matrix", modPanelArea.getX() + 12, modPanelArea.getY() + 4,
+                120, 14, juce::Justification::centredLeft);
+
     // header: lowercase wordmark, soothe-style
     g.setColour (theme::ink);
     g.setFont (theme::font (23.0f, true));
@@ -453,6 +520,39 @@ void AddSynthEditor::resized()
 {
     auto r = getLocalBounds().reduced (14);
     r.removeFromTop (28);
+
+    auto modArea = r.removeFromBottom (124);
+    modPanelArea = modArea;
+    r.removeFromBottom (8);
+    {
+        auto inner = modArea.reduced (10, 6);
+        inner.removeFromTop (12); // "mod matrix" caption row
+        auto lfoArea = inner.removeFromRight (150);
+        auto lw = lfoArea.getWidth() / 2;
+        auto place = [] (AddSynthEditor::Knob& k, juce::Rectangle<int> cell)
+        {
+            k.label.setBounds (cell.removeFromTop (15));
+            k.slider.setBounds (cell);
+        };
+        place (lfo1Knob, lfoArea.removeFromLeft (lw).reduced (2));
+        place (lfo2Knob, lfoArea.reduced (2));
+
+        auto rowH = inner.getHeight() / 2;
+        auto cellW = inner.getWidth() / 3;
+        for (size_t i = 0; i < modRows.size(); ++i)
+        {
+            auto cell = juce::Rectangle<int> (
+                inner.getX() + (int) (i % 3) * cellW,
+                inner.getY() + (int) (i / 3) * rowH,
+                cellW, rowH).reduced (4);
+            auto mid = cell.getHeight() / 2 - 12;
+            auto& m = *modRows[i];
+            auto c = cell;
+            m.src.setBounds (c.removeFromLeft (86).withTrimmedTop (mid).withHeight (24));
+            m.amt.setBounds (c.removeFromLeft (44));
+            m.dst.setBounds (c.withTrimmedTop (mid).withHeight (24));
+        }
+    }
 
     // left column: pad with the scale keyboard underneath
     auto left = r.removeFromLeft (juce::jmin (r.getHeight() - 58, 410));

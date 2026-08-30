@@ -46,6 +46,18 @@ public:
         bool  syncLoop = false;    // loopLen picks beats (1/4..16) at host bpm
         bool  syncSpeed = false;   // speed picks bars (1/4..8) per full scan
         float bpm = 120.0f;        // host tempo (fallback 120)
+
+        // ---- modulation matrix (all applied at control rate) ----
+        static constexpr int nModSlots = 6;
+        // sources: 0 off, 1 lfo1, 2 lfo2, 3 env pos, 4 voice idx,
+        //          5 random, 6 velocity, 7 note
+        // dests:   0 morph x, 1 morph y, 2 tilt, 3 blur, 4 speed, 5 noise,
+        //          6 width, 7 stretch, 8 odd/even, 9 partials, 10 pitch,
+        //          11 loop pos
+        int   modSrc[nModSlots] {};
+        int   modDst[nModSlots] {};
+        float modAmt[nModSlots] {};
+        float lfo1 = 0.0f, lfo2 = 0.0f;   // current global LFO values, -1..1
     };
 
     void setField (std::shared_ptr<const MorphField> f) { pendingField = std::move (f); }
@@ -78,6 +90,8 @@ public:
         midiNoteNum = midiNote;
         f0 = (float) juce::MidiMessage::getMidiNoteInHertz (midiNote);
         vel = 0.2f + 0.8f * velocity;
+        velocity01 = velocity;
+        noteRandom = rng.nextFloat();
         quantMidi = (float) midiNote;
         firstQuant = true;
         framePos = 0.0;
@@ -160,6 +174,8 @@ public:
             double scanSec = best * 4.0 * 60.0 / juce::jmax (20.0f, params.bpm);
             effSpeed = (field->nFrames / field->controlRate) / scanSec;
         }
+        if (float sm = modFor (4); sm != 0.0f)
+            effSpeed *= std::exp2 ((double) sm);
         double frameInc = frameIncBase * effSpeed;
 
         // loop length in frames: musical beats at host tempo (compensated
@@ -179,7 +195,8 @@ public:
             else
                 loopL = juce::jmax (2.0, (double) params.loopLen * total);
         }
-        double ls = params.loopStart * total;
+        double ls = juce::jlimit (0.0f, 0.98f,
+                          params.loopStart + modFor (11)) * total;
 
         for (int i = 0; i < num; ++i)
         {
@@ -201,15 +218,15 @@ public:
                 sR += a * gR[k] * zR[k].imag();
             }
 
-            if (params.noise > 0.0f && nB > 0)
+            if (effNoise > 0.0f && nB > 0)
             {
                 float n = rng.nextFloat() * 2.0f - 1.0f;
                 for (int b = 0; b < nB; ++b)
                 {
                     float g = ng0[b] + (ng1[b] - ng0[b]) * frac;
                     float y = g * bandFilter[b].processSample (n);
-                    sL += params.noise * ngL[b] * y;
-                    sR += params.noise * ngR[b] * y;
+                    sL += effNoise * ngL[b] * y;
+                    sR += effNoise * ngR[b] * y;
                 }
             }
 
@@ -264,6 +281,35 @@ public:
 private:
     static float wrap01 (float v) noexcept { return v - std::floor (v); }
 
+    float sourceValue (int src) const noexcept
+    {
+        switch (src)
+        {
+            case 1: return params.lfo1;                          // -1..1
+            case 2: return params.lfo2;                          // -1..1
+            case 3: return field != nullptr                      // env pos 0..1
+                ? (float) (framePos / (double) juce::jmax (1, field->nFrames - 1))
+                : 0.0f;
+            case 4: return (float) voiceIndex                    // voice idx 0..1
+                / (float) juce::jmax (1, params.spreadN - 1);
+            case 5: return noteRandom;                           // 0..1 per note
+            case 6: return velocity01;                           // 0..1
+            case 7: return ((float) midiNoteNum - 60.0f) / 24.0f; // +-1 per 2 oct
+            default: return 0.0f;
+        }
+    }
+
+    // summed modulation for one destination id
+    float modFor (int dst) const noexcept
+    {
+        float m = 0.0f;
+        for (int i = 0; i < Params::nModSlots; ++i)
+            if (params.modDst[i] == dst && params.modSrc[i] != 0
+                && params.modAmt[i] != 0.0f)
+                m += params.modAmt[i] * sourceValue (params.modSrc[i]);
+        return m;
+    }
+
     static float nearestAllowedMidi (float m, juce::uint16 mask) noexcept
     {
         int center = (int) std::lround (m);
@@ -289,8 +335,10 @@ private:
         auto nLayers = fld.layers.size();
 
         // this voice's own pad position: global cursor + wrapped spread offset
-        float tx = wrap01 (params.cursorX + (float) voiceIndex * params.spreadX);
-        float ty = wrap01 (params.cursorY + (float) voiceIndex * params.spreadY);
+        float tx = wrap01 (params.cursorX + (float) voiceIndex * params.spreadX
+                           + modFor (0));
+        float ty = wrap01 (params.cursorY + (float) voiceIndex * params.spreadY
+                           + modFor (1));
         cursorX += (tx - cursorX) * cursorCoef;
         cursorY += (ty - cursorY) * cursorCoef;
         float wts[MorphField::maxLayers];
@@ -303,7 +351,8 @@ private:
             B += wts[li] * fld.layers[li].inharmonicity;
         }
         if (ratio <= 0.0f) ratio = 1.0f;
-        B += params.stretchB;                                 // Stretch
+        B += params.stretchB
+           + 0.01f * juce::jmax (0.0f, modFor (7));           // Stretch
 
         // Pitch Env scales the track in semitone space (a linear-ratio
         // scale would go negative on deep dips at high amounts)
@@ -327,20 +376,29 @@ private:
                 : 1.0f - std::exp (-1.0f / (params.bend * fld.controlRate));
             quantMidi += (targetMidi - quantMidi) * bendCoef;
         }
-        float baseFreq = 440.0f * std::exp2 ((quantMidi - 69.0f) / 12.0f);
+        float baseFreq = 440.0f * std::exp2 ((quantMidi - 69.0f) / 12.0f
+                                             + modFor (10));
 
         // timbre macro coefficients (constant across partials this frame)
-        const float tiltCoef = params.tiltDbOct * 0.1151293f; // ln(10)/20
-        const float oddG = juce::jmin (1.0f, 1.0f + params.oddEven);
-        const float evenG = juce::jmin (1.0f, 1.0f - params.oddEven);
-        const float blurAlpha = params.blur <= 0.001f ? 1.0f
-            : 1.0f - std::exp (-1.0f / (params.blur * fld.controlRate));
-        const float nPart = juce::jlimit (1.0f, (float) nP, params.partials);
+        const float tiltDb = params.tiltDbOct + 12.0f * modFor (2);
+        const float tiltCoef = tiltDb * 0.1151293f; // ln(10)/20
+        const float oe = juce::jlimit (-1.0f, 1.0f,
+                                       params.oddEven + modFor (8));
+        const float oddG = juce::jmin (1.0f, 1.0f + oe);
+        const float evenG = juce::jmin (1.0f, 1.0f - oe);
+        const float blurT = juce::jmax (0.0f, params.blur + 2.0f * modFor (3));
+        const float blurAlpha = blurT <= 0.001f ? 1.0f
+            : 1.0f - std::exp (-1.0f / (blurT * fld.controlRate));
+        const float nPart = juce::jlimit (1.0f, (float) nP,
+                                          params.partials + 64.0f * modFor (9));
+        effNoise = juce::jmax (0.0f, params.noise * std::exp2 (modFor (5)));
 
         // stereo width: pan spread grows with harmonic number (fundamental
         // stays centered), micro-detune decorrelates L/R phase over time
-        const float widthPan = 0.85f * params.width;
-        const float widthDet = 2.0f * params.width * 5.7735e-4f; // ~2 cents
+        const float widthEff = juce::jlimit (0.0f, 1.0f,
+                                             params.width + modFor (6));
+        const float widthPan = 0.85f * widthEff;
+        const float widthDet = 2.0f * widthEff * 5.7735e-4f; // ~2 cents
 
         auto nyq = 0.98f * (float) sr * 0.5f;
         for (int k = 0; k < nP; ++k)
@@ -417,6 +475,7 @@ private:
     std::atomic<int>* noteCounter = nullptr;
     int voiceIndex = 0;
     int midiNoteNum = 60;
+    float velocity01 = 1.0f, noteRandom = 0.0f;
     float quantMidi = 60.0f;
     bool firstQuant = true;
     double sr = 44100.0, framePos = 0.0, frameIncBase = 0.0;
@@ -425,6 +484,7 @@ private:
     bool releasing = false, loopArmed = false;
     float releaseGain = 1.0f, releaseStep = 0.001f;
     float attackGain = 1.0f, attackStep = 1.0f;
+    float effNoise = 1.0f;
     float cursorX = 0.5f, cursorY = 0.5f, cursorCoef = 0.1f;
 
     std::complex<float> zL[maxPartials], wL[maxPartials];

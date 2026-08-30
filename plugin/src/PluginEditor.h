@@ -119,6 +119,19 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
     std::vector<std::unique_ptr<Knob>> knobs;
+
+    // modulation matrix strip
+    struct ModRow
+    {
+        juce::ComboBox src, dst;
+        juce::Slider amt;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> srcA, dstA;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> amtA;
+    };
+    std::vector<std::unique_ptr<ModRow>> modRows;
+    Knob lfo1Knob, lfo2Knob;
+    juce::Rectangle<int> modPanelArea;
+
     juce::ToggleButton syncLoopBtn { "loop sync" }, syncSpeedBtn { "speed sync" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
         syncLoopA, syncSpeedA;
