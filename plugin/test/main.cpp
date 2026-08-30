@@ -48,6 +48,9 @@ int main (int argc, char** argv)
             else if (key == "width")    params.width = val;
             else if (key == "loopstart") params.loopStart = val;
             else if (key == "looplen")  params.loopLen = val;
+            else if (key == "syncloop") params.syncLoop = val > 0.5f;
+            else if (key == "syncspeed") params.syncSpeed = val > 0.5f;
+            else if (key == "bpm")      params.bpm = val;
             else if (key == "spreadx")  params.spreadX = val;
             else if (key == "spready")  params.spreadY = val;
             else if (key == "spreadn")  params.spreadN = (int) val;

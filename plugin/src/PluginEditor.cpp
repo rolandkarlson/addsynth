@@ -379,6 +379,19 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         knobs.push_back (std::move (k));
     }
 
+    for (auto* t : { &syncLoopBtn, &syncSpeedBtn })
+    {
+        t->setColour (juce::ToggleButton::textColourId, theme::ink);
+        t->setColour (juce::ToggleButton::tickColourId, theme::ink);
+        t->setColour (juce::ToggleButton::tickDisabledColourId,
+                      theme::ink.withAlpha (0.4f));
+        addAndMakeVisible (*t);
+    }
+    syncLoopA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        proc.apvts, "syncloop", syncLoopBtn);
+    syncSpeedA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        proc.apvts, "syncspeed", syncSpeedBtn);
+
     setSize (900, 566);
 }
 
@@ -454,6 +467,10 @@ void AddSynthEditor::resized()
     side.removeFromTop (2);
     hint.setBounds (side.removeFromTop (22));
     side.removeFromTop (2);
+
+    auto toggles = side.removeFromBottom (24);
+    syncLoopBtn.setBounds (toggles.removeFromLeft (toggles.getWidth() / 2));
+    syncSpeedBtn.setBounds (toggles);
 
     const int cols = 4, rows = 5;
     auto cellW = side.getWidth() / cols;

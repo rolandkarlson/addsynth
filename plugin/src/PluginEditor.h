@@ -119,6 +119,9 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
     std::vector<std::unique_ptr<Knob>> knobs;
+    juce::ToggleButton syncLoopBtn { "loop sync" }, syncSpeedBtn { "speed sync" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
+        syncLoopA, syncSpeedA;
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AddSynthEditor)

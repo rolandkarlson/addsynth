@@ -82,7 +82,12 @@ Ableton. Pad layout is saved with the session.
   0 = exact mono. Fully mono-compatible (sums back cleanly).
 - *Loop Pos* / *Loop Len* — sustain loop: while a key is held, the envelope
   cycles the region [pos, pos+len]; release plays out past the loop
-  naturally. Len 0 = one-shot (default). Click-free (phase is continuous).
+  naturally. Len 0 = one-shot (default). Click-free (phase is continuous),
+  and a region running past the envelope end wraps around through the start.
+- *loop sync* checkbox — Loop Len picks musical lengths (1/4..16 beats) at
+  the host tempo, compensated for Speed so the audible loop stays on grid.
+- *speed sync* checkbox — Speed means "scan the whole envelope in N bars"
+  (1/4..8, quantized). Both use the DAW's reported tempo (120 standalone).
 - *Bend* + the one-octave keyboard under the pad — pitch-envelope scale
   quantizer. Toggle pitch classes on the keyboard; the sounding pitch
   (played note x analyzed pitch track) snaps to the nearest enabled note in

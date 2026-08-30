@@ -43,6 +43,9 @@ public:
         float width = 0.0f;        // stereo: per-partial pan + L/R micro-detune
         float loopStart = 0.4f;    // sustain loop start, 0..1 of the envelope
         float loopLen = 0.0f;      // loop length, 0..1; 0 = looping off
+        bool  syncLoop = false;    // loopLen picks beats (1/4..16) at host bpm
+        bool  syncSpeed = false;   // speed picks bars (1/4..8) per full scan
+        float bpm = 120.0f;        // host tempo (fallback 120)
     };
 
     void setField (std::shared_ptr<const MorphField> f) { pendingField = std::move (f); }
@@ -80,6 +83,7 @@ public:
         framePos = 0.0;
         frameIncBase = field->controlRate / sr;
         releasing = false;
+        loopArmed = false;
         releaseGain = 1.0f;
         attackGain = 0.0f;
         attackStep = 1.0f / (juce::jmax (0.001f, params.attack) * (float) sr);
@@ -144,7 +148,38 @@ public:
 
         auto* l = out.getWritePointer (0, start);
         auto* r = out.getNumChannels() > 1 ? out.getWritePointer (1, start) : nullptr;
-        double frameInc = frameIncBase * juce::jmax (0.0f, params.speed);
+
+        // effective speed: free multiplier, or "scan the envelope in N bars"
+        double effSpeed = juce::jmax (0.0f, params.speed);
+        if (params.syncSpeed && effSpeed > 0.01)
+        {
+            static const double bars[] = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0 };
+            double best = bars[0];
+            for (double b : bars)
+                if (std::abs (b - effSpeed) < std::abs (best - effSpeed)) best = b;
+            double scanSec = best * 4.0 * 60.0 / juce::jmax (20.0f, params.bpm);
+            effSpeed = (field->nFrames / field->controlRate) / scanSec;
+        }
+        double frameInc = frameIncBase * effSpeed;
+
+        // loop length in frames: musical beats at host tempo (compensated
+        // by speed so the audible period stays on the grid), or a fraction
+        // of the envelope
+        double total = (double) (field->nFrames - 1);
+        double loopL = 0.0;
+        if (params.loopLen > 0.001f)
+        {
+            if (params.syncLoop)
+            {
+                static const double beats[] = { 0.25, 0.5, 1, 2, 4, 8, 16 };
+                int bi = juce::jlimit (0, 6, (int) std::lround (params.loopLen * 6.0f));
+                double loopSec = beats[bi] * 60.0 / juce::jmax (20.0f, params.bpm);
+                loopL = juce::jmin (total, loopSec * field->controlRate * effSpeed);
+            }
+            else
+                loopL = juce::jmax (2.0, (double) params.loopLen * total);
+        }
+        double ls = params.loopStart * total;
 
         for (int i = 0; i < num; ++i)
         {
@@ -198,17 +233,30 @@ public:
 
             // sustain loop: while the key is held, cycle a region of the
             // envelope; release lets it play out past the loop naturally.
-            // Phasor oscillators keep their phase across the jump, and the
-            // amp targets lerp from the pre-jump values over one control
-            // frame, so the wrap is click-free.
-            if (! releasing && params.loopLen > 0.001f)
+            // If start+len runs past the envelope end, the region wraps
+            // around through the beginning. Phasor oscillators keep their
+            // phase across jumps, and amp targets lerp from the pre-jump
+            // values over one control frame, so wraps are click-free.
+            if (! releasing && loopL > 2.0)
             {
-                double last = (double) (field->nFrames - 1);
-                double ls = params.loopStart * last;
-                double le = juce::jmin (last,
-                    ls + juce::jmax (0.02f, params.loopLen) * last);
-                if (le > ls + 2.0 && framePos >= le)
-                    framePos = ls + std::fmod (framePos - le, le - ls);
+                if (framePos >= ls) loopArmed = true;
+                if (loopArmed)
+                {
+                    double le = ls + loopL;
+                    if (le <= total)
+                    {
+                        if (framePos >= le)
+                            framePos = ls + std::fmod (framePos - le, loopL);
+                    }
+                    else  // wrapped region: [ls, total) then [0, le - total)
+                    {
+                        double leW = le - total;
+                        if (framePos >= total)
+                            framePos -= total;
+                        else if (framePos < ls && framePos >= leW)
+                            framePos = ls + std::fmod (framePos - leW, loopL);
+                    }
+                }
             }
         }
     }
@@ -374,7 +422,7 @@ private:
     double sr = 44100.0, framePos = 0.0, frameIncBase = 0.0;
     float f0 = 440.0f, vel = 1.0f;
     int nP = 0, nB = 0, currentFrame = -1, ctrlCountdown = 0;
-    bool releasing = false;
+    bool releasing = false, loopArmed = false;
     float releaseGain = 1.0f, releaseStep = 0.001f;
     float attackGain = 1.0f, attackStep = 1.0f;
     float cursorX = 0.5f, cursorY = 0.5f, cursorCoef = 0.1f;
