@@ -40,7 +40,7 @@ struct AddmModel
         if (version != 1) { error = "unsupported version"; return nullptr; }
 
         juce::MemoryBlock headerBytes;
-        in.readIntoMemoryBlock (headerBytes, (ssize_t) headerLen);
+        in.readIntoMemoryBlock (headerBytes, (int) headerLen);
         auto header = juce::JSON::parse (headerBytes.toString());
         if (header.isVoid()) { error = "bad JSON header"; return nullptr; }
 
