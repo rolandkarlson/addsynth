@@ -42,7 +42,7 @@ public:
                                const juce::Colour&, bool, bool) override;
     juce::Font getTextButtonFont (juce::TextButton&, int) override
     {
-        return theme::font (13.0f);
+        return theme::font (15.0f);
     }
 };
 

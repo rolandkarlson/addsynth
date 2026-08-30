@@ -62,7 +62,7 @@ void AddLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
     {
         g.setColour (label.findColour (juce::Label::textColourId)
                           .withMultipliedAlpha (label.isEnabled() ? 1.0f : 0.5f));
-        g.setFont (theme::font (juce::jmin (13.0f,
+        g.setFont (theme::font (juce::jmin (15.5f,
                                 (float) label.getHeight() - 3.0f)));
         g.drawFittedText (label.getText(), label.getLocalBounds(),
                           label.getJustificationType(), 1, 1.0f);
@@ -168,10 +168,10 @@ void MorphPad::paint (juce::Graphics& g)
         g.drawEllipse (c.x - nr, c.y - nr, nr * 2, nr * 2, 2.0f);
 
         g.setColour (theme::ink.withAlpha (0.8f));
-        g.setFont (theme::font (11.0f));
+        g.setFont (theme::font (12.5f));
         g.drawText (slots[i].name.substring (0, 14),
-                    (int) (c.x - 50), (int) (c.y + nr + 3),
-                    100, 13, juce::Justification::centred);
+                    (int) (c.x - 55), (int) (c.y + nr + 3),
+                    110, 15, juce::Justification::centred);
     }
 
     // ghost cursors: where each active voice actually sits after spread
@@ -193,7 +193,7 @@ void MorphPad::paint (juce::Graphics& g)
     if (slots.empty())
     {
         g.setColour (theme::ink.withAlpha (0.5f));
-        g.setFont (theme::font (14.0f));
+        g.setFont (theme::font (16.0f));
         g.drawText ("add models, drag them around, move the circle to morph",
                     getLocalBounds(), juce::Justification::centred);
     }
@@ -292,7 +292,7 @@ void ScaleKeyboard::paint (juce::Graphics& g)
     };
     static const char* names[12] = { "c", "c#", "d", "d#", "e", "f",
                                      "f#", "g", "g#", "a", "a#", "b" };
-    g.setFont (theme::font (10.0f));
+    g.setFont (theme::font (12.0f));
     for (int wi = 0; wi < 7; ++wi)
     {
         auto r = whiteKeyRect (wi);
@@ -302,7 +302,7 @@ void ScaleKeyboard::paint (juce::Graphics& g)
         g.setColour (theme::ink.withAlpha (0.3f));
         g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
         g.setColour (isOn (pc) ? juce::Colours::white : theme::ink);
-        g.drawText (names[pc], r.removeFromBottom (14),
+        g.drawText (names[pc], r.removeFromBottom (17),
                     juce::Justification::centred);
     }
     for (int wi = 0; wi < 7; ++wi)
@@ -345,13 +345,11 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     addButton.onClick = [this] { openModelChooser(); };
 
     addAndMakeVisible (hint);
-    hint.setFont (theme::font (11.5f));
+    hint.setFont (theme::font (12.5f));
     hint.setColour (juce::Label::textColourId, theme::ink.withAlpha (0.55f));
-    hint.setText ("drag nodes to place, double-click to remove\n"
-                  "drag circle to morph\n"
-                  "keys below the pad: pitch-envelope scale",
+    hint.setText ("drag nodes / circle morphs / double-click removes / keys = scale",
                   juce::dontSendNotification);
-    hint.setJustificationType (juce::Justification::topLeft);
+    hint.setJustificationType (juce::Justification::centredLeft);
 
     static const std::pair<const char*, const char*> knobDefs[] = {
         { "gain", "gain" },       { "noise", "noise" },     { "speed", "speed" },
@@ -369,10 +367,10 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         k->slider.setColour (juce::Slider::textBoxBackgroundColourId, theme::pill);
         k->slider.setColour (juce::Slider::textBoxOutlineColourId,
                              juce::Colours::transparentBlack);
-        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 58, 15);
+        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 68, 18);
         addAndMakeVisible (k->slider);
         k->label.setText (title, juce::dontSendNotification);
-        k->label.setFont (theme::font (12.0f));
+        k->label.setFont (theme::font (14.0f));
         k->label.setJustificationType (juce::Justification::centred);
         addAndMakeVisible (k->label);
         k->attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -380,7 +378,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         knobs.push_back (std::move (k));
     }
 
-    setSize (860, 540);
+    setSize (900, 566);
 }
 
 AddSynthEditor::~AddSynthEditor()
@@ -429,11 +427,11 @@ void AddSynthEditor::paint (juce::Graphics& g)
 
     // header: lowercase wordmark, soothe-style
     g.setColour (theme::ink);
-    g.setFont (theme::font (20.0f, true));
-    g.drawText ("addsynth", 16, 6, 200, 24, juce::Justification::centredLeft);
+    g.setFont (theme::font (23.0f, true));
+    g.drawText ("addsynth", 16, 5, 200, 26, juce::Justification::centredLeft);
     g.setColour (theme::ink.withAlpha (0.5f));
-    g.setFont (theme::font (12.0f));
-    g.drawText ("additive morph synth", 118, 10, 220, 18,
+    g.setFont (theme::font (13.5f));
+    g.drawText ("additive morph synth", 132, 10, 240, 18,
                 juce::Justification::centredLeft);
 }
 
@@ -443,7 +441,7 @@ void AddSynthEditor::resized()
     r.removeFromTop (28);
 
     // left column: pad with the scale keyboard underneath
-    auto left = r.removeFromLeft (r.getHeight() - 58);
+    auto left = r.removeFromLeft (juce::jmin (r.getHeight() - 58, 410));
     keyboard.setBounds (left.removeFromBottom (52));
     left.removeFromBottom (6);
     pad.setBounds (left);
@@ -451,9 +449,9 @@ void AddSynthEditor::resized()
     r.removeFromLeft (12);
     sidePanelArea = r;
     auto side = r.reduced (12, 10);
-    addButton.setBounds (side.removeFromTop (26).removeFromLeft (150));
+    addButton.setBounds (side.removeFromTop (30).removeFromLeft (170));
     side.removeFromTop (2);
-    hint.setBounds (side.removeFromTop (44));
+    hint.setBounds (side.removeFromTop (22));
     side.removeFromTop (2);
 
     const int cols = 4, rows = 5;
@@ -465,7 +463,7 @@ void AddSynthEditor::resized()
             side.getX() + (int) (i % cols) * cellW,
             side.getY() + (int) (i / cols) * cellH,
             cellW, cellH).reduced (2);
-        knobs[i]->label.setBounds (cell.removeFromTop (14));
+        knobs[i]->label.setBounds (cell.removeFromTop (18));
         knobs[i]->slider.setBounds (cell);
     }
 }
