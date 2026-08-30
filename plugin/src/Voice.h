@@ -41,6 +41,8 @@ public:
         juce::uint16 keyMask = 0;  // enabled pitch classes (bit 0 = C); 0 = bypass
         float bend = 0.05f;        // glide time (s) between quantized notes
         float width = 0.0f;        // stereo: per-partial pan + L/R micro-detune
+        float loopStart = 0.4f;    // sustain loop start, 0..1 of the envelope
+        float loopLen = 0.0f;      // loop length, 0..1; 0 = looping off
     };
 
     void setField (std::shared_ptr<const MorphField> f) { pendingField = std::move (f); }
@@ -193,6 +195,21 @@ public:
             l[i] += sL * env;
             if (r != nullptr) r[i] += sR * env;
             framePos += frameInc;
+
+            // sustain loop: while the key is held, cycle a region of the
+            // envelope; release lets it play out past the loop naturally.
+            // Phasor oscillators keep their phase across the jump, and the
+            // amp targets lerp from the pre-jump values over one control
+            // frame, so the wrap is click-free.
+            if (! releasing && params.loopLen > 0.001f)
+            {
+                double last = (double) (field->nFrames - 1);
+                double ls = params.loopStart * last;
+                double le = juce::jmin (last,
+                    ls + juce::jmax (0.02f, params.loopLen) * last);
+                if (le > ls + 2.0 && framePos >= le)
+                    framePos = ls + std::fmod (framePos - le, le - ls);
+            }
         }
     }
 

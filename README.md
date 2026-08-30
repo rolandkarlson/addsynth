@@ -80,6 +80,9 @@ Ableton. Pad layout is saved with the session.
   highs spread, constant-power) plus ~±2 cents of opposite L/R micro-detune
   for slowly evolving decorrelation; noise bands alternate pan lean.
   0 = exact mono. Fully mono-compatible (sums back cleanly).
+- *Loop Pos* / *Loop Len* — sustain loop: while a key is held, the envelope
+  cycles the region [pos, pos+len]; release plays out past the loop
+  naturally. Len 0 = one-shot (default). Click-free (phase is continuous).
 - *Bend* + the one-octave keyboard under the pad — pitch-envelope scale
   quantizer. Toggle pitch classes on the keyboard; the sounding pitch
   (played note x analyzed pitch track) snaps to the nearest enabled note in
@@ -105,12 +108,30 @@ Installed at `~/Library/Services/Convert to AddSynth Model.workflow`
 (a copy lives in `tools/`; to reinstall: `cp -R "tools/Convert to AddSynth
 Model.workflow" ~/Library/Services/`). Works on multi-selections too.
 
+## Evolution tools
+
+**GA against a reference** — evolve a model's timbre toward any audio file
+(fitness = multi-scale log-mel distance, genome = tilt/odd-even/8 group
+gains/inharmonicity/time-stretch/noise scale):
+
+```bash
+.venv/bin/python -m additive.cli evolve reference.wav models/base.addm --gens 20
+```
+
+**Interactive breeding** — you are the fitness function:
+
+```bash
+.venv/bin/python -m additive.cli breed start models/base.addm -o breeding/s1
+# listen to breeding/s1/gen00/*.wav, pick two favourites (e.g. 2 and 5):
+.venv/bin/python -m additive.cli breed next 2 5 -o breeding/s1
+# repeat until happy, then export candidate N to models/:
+.venv/bin/python -m additive.cli breed pick 3 -o breeding/s1
+```
+
+Each generation keeps the two parents as candidates 00/01 (lineages never
+regress); children are morphs at random depths plus small mutations.
+
 ## Ideas / next steps
 
-- sustain loop points (loop a frame region while the key is held)
-- GA against a reference: fitness = multi-scale mel distance
-  (`demo.py` already computes it), genome = the transform stack in
-  `additive/mutate.py`
-- interactive breeding UI: render 8 mutations, pick 2, breed = `morph` + `mutate`
 - wavetable export (any frame's partial amplitudes = one wavetable cycle)
-- model browser + morph XY pad in the plugin
+- model browser in the plugin

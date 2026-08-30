@@ -59,6 +59,24 @@ def main() -> None:
     im.add_argument("--seed", type=int)
     im.add_argument("--no-preview", action="store_true")
 
+    ev = sub.add_parser("evolve", help="evolve a model toward a reference sound")
+    ev.add_argument("reference", help="reference audio file")
+    ev.add_argument("base", help="starting .addm model")
+    ev.add_argument("-o", "--output")
+    ev.add_argument("--gens", type=int, default=20)
+    ev.add_argument("--pop", type=int, default=16)
+    ev.add_argument("--f0", type=float, help="reference f0 if pitch detection fails")
+    ev.add_argument("--seed", type=int)
+
+    br = sub.add_parser("breed", help="interactive breeding (you pick favourites)")
+    br.add_argument("action", choices=["start", "next", "pick"])
+    br.add_argument("args", nargs="*", help="start: base.addm | next: A B | pick: N")
+    br.add_argument("-o", "--session", default="breeding/session")
+    br.add_argument("-n", type=int, default=8)
+    br.add_argument("--amount", type=float)
+    br.add_argument("--dest", default="models")
+    br.add_argument("--seed", type=int)
+
     mu = sub.add_parser("mutate", help="random variations of a model")
     mu.add_argument("model")
     mu.add_argument("-n", type=int, default=8)
@@ -102,6 +120,34 @@ def main() -> None:
         out = args.output or f"{mm.name}.addm"
         mm.save(out)
         print(out)
+
+    elif args.cmd == "evolve":
+        from .evolve import evolve
+        base = AdditiveModel.load(args.base)
+        res = evolve(args.reference, base, generations=args.gens,
+                     population=args.pop, f0_override=args.f0, seed=args.seed)
+        out = args.output or os.path.splitext(args.base)[0] + "_evolved.addm"
+        res.model.save(out)
+        wav = os.path.splitext(out)[0] + ".wav"
+        sf.write(wav, render_note(res.model, sr=44100), 44100)
+        print(f"best fitness {res.fitness:.3f} dB -> {out} (+ preview {wav})")
+
+    elif args.cmd == "breed":
+        from . import breed as B
+        if args.action == "start":
+            if len(args.args) != 1:
+                raise SystemExit("usage: breed start base.addm -o sessiondir")
+            B.start(args.args[0], args.session, n=args.n,
+                    amount=args.amount or 0.4, seed=args.seed)
+        elif args.action == "next":
+            if len(args.args) != 2:
+                raise SystemExit("usage: breed next A B -o sessiondir")
+            B.next_gen(args.session, int(args.args[0]), int(args.args[1]),
+                       n=args.n, amount=args.amount or 0.25, seed=args.seed)
+        else:
+            if len(args.args) != 1:
+                raise SystemExit("usage: breed pick N -o sessiondir")
+            B.pick(args.session, int(args.args[0]), dest=args.dest)
 
     elif args.cmd == "mutate":
         model = AdditiveModel.load(args.model)

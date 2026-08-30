@@ -46,6 +46,8 @@ int main (int argc, char** argv)
             else if (key == "keys")     params.keyMask = (juce::uint16) val;
             else if (key == "bend")     params.bend = val;
             else if (key == "width")    params.width = val;
+            else if (key == "loopstart") params.loopStart = val;
+            else if (key == "looplen")  params.loopLen = val;
             else if (key == "spreadx")  params.spreadX = val;
             else if (key == "spready")  params.spreadY = val;
             else if (key == "spreadn")  params.spreadN = (int) val;

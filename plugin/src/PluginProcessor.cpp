@@ -62,6 +62,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.05f));
     layout.add (std::make_unique<P> ("width", "Width",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.35f));
+    layout.add (std::make_unique<P> ("loopstart", "Loop Start",
+        juce::NormalisableRange<float> (0.0f, 0.95f, 0.001f), 0.4f));
+    layout.add (std::make_unique<P> ("looplen", "Loop Len",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
     static const char* noteNames[12] = { "C", "C#", "D", "D#", "E", "F",
                                          "F#", "G", "G#", "A", "A#", "B" };
     for (int i = 0; i < 12; ++i)
@@ -108,6 +112,8 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.spreadN = (int) get ("spreadn");
     p.bend = get ("bend");
     p.width = get ("width");
+    p.loopStart = get ("loopstart");
+    p.loopLen = get ("looplen");
     p.keyMask = 0;
     for (int i = 0; i < 12; ++i)
         if (apvts.getRawParameterValue ("key" + juce::String (i))->load() > 0.5f)
