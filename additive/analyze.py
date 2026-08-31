@@ -37,11 +37,47 @@ def _stft_mag(y: np.ndarray, n_fft: int, hop: int):
     return S, win_gain
 
 
-def _harmonic_env(S: np.ndarray, win_gain: float, bin_hz: float,
-                  f0: np.ndarray, n_partials: int):
-    """Sample |STFT| at every harmonic k*f0 -> (n_frames, n_partials)."""
+def _refine_f0(S: np.ndarray, bin_hz: float, f0: np.ndarray) -> np.ndarray:
+    """Correct pyin's small bias per frame using the actual spectral peaks
+    of harmonics 1..3 (parabolic interpolation). A fractional-percent f0
+    error otherwise derails the sampling grid at high harmonics."""
     n_bins, n_frames = S.shape
-    k = np.arange(1, n_partials + 1)[:, None]            # (P, 1)
+    out = f0.copy()
+    for fi in range(n_frames):
+        ests, wts = [], []
+        for k in (1, 2, 3):
+            hb = k * f0[fi] / bin_hz
+            if hb >= n_bins - 2:
+                break
+            w = max(2, int(0.4 * f0[fi] / bin_hz))
+            lo, hi = int(max(1, hb - w)), int(min(n_bins - 2, hb + w))
+            if hi <= lo + 1:
+                continue
+            pk = int(np.argmax(S[lo:hi + 1, fi])) + lo
+            if pk <= lo or pk >= hi:
+                continue
+            a, b, c = S[pk - 1, fi], S[pk, fi], S[pk + 1, fi]
+            den = a - 2 * b + c
+            d = 0.5 * (a - c) / den if abs(den) > 1e-12 else 0.0
+            ests.append((pk + d) * bin_hz / k)
+            wts.append(b)
+        if ests:
+            out[fi] = float(np.average(ests, weights=wts))
+    # never trust the refinement further than a semitone from pyin
+    return np.clip(out, f0 * 2 ** (-1 / 12), f0 * 2 ** (1 / 12))
+
+
+def _harmonic_env(S: np.ndarray, win_gain: float, bin_hz: float,
+                  f0: np.ndarray, n_partials: int,
+                  detune: np.ndarray | None = None):
+    """Sample |STFT| at every harmonic k*f0 (times per-partial detune)
+    -> (n_frames, n_partials). Where the sampling point sits on a local
+    spectral peak, use the parabolic vertex magnitude (no scalloping
+    loss); otherwise fall back to linear interpolation."""
+    n_bins, n_frames = S.shape
+    k = np.arange(1, n_partials + 1, dtype=np.float64)[:, None]  # (P, 1)
+    if detune is not None:
+        k = k * detune[:, None]
     harm_bin = (k * f0[None, :n_frames]) / bin_hz        # fractional bin
     below_nyq = harm_bin < (n_bins - 2)
 
@@ -49,6 +85,15 @@ def _harmonic_env(S: np.ndarray, win_gain: float, bin_hz: float,
     frac = np.clip(harm_bin - lo, 0.0, 1.0)
     cols = np.arange(n_frames)[None, :]
     mag = S[lo, cols] * (1 - frac) + S[lo + 1, cols] * frac
+
+    c = np.clip(np.round(harm_bin).astype(int), 1, n_bins - 2)
+    sa, sb, sc = S[c - 1, cols], S[c, cols], S[c + 1, cols]
+    den = sa - 2 * sb + sc
+    delta = np.where(np.abs(den) > 1e-12, 0.5 * (sa - sc) / den, 0.0)
+    vertex = sb - 0.25 * (sa - sc) * delta
+    on_peak = (sb >= sa) & (sb >= sc) & (sb > 0) & (np.abs(delta) <= 0.6)
+    mag = np.where(on_peak, np.maximum(vertex, 0.0), mag)
+
     env = np.where(below_nyq, mag / win_gain, 0.0).T     # (F, P)
     return env, harm_bin, below_nyq
 
@@ -189,7 +234,8 @@ def analyze_signal(
         f0 = np.interp(idx, idx[voiced], f0[voiced])
 
     # adaptive partial count: reach ~16 kHz whatever the pitch
-    if n_partials is None:
+    n_partials_auto = n_partials is None
+    if n_partials_auto:
         n_partials = int(np.clip(round(TARGET_TOP_HZ / f0_ref),
                                  MIN_PARTIALS, MAX_PARTIALS))
 
@@ -197,25 +243,43 @@ def analyze_signal(
     S_long, wg_long = _stft_mag(y, n_fft, hop)
     n_frames = S_long.shape[1]
     f0 = np.resize(f0, n_frames)
-    env_long, hb_long, nyq_long = _harmonic_env(
+    if f0_override is None:
+        f0 = _refine_f0(S_long, sr / n_fft, f0)
+        f0_ref = float(np.median(f0))
+        if n_partials_auto:
+            n_partials = int(np.clip(round(TARGET_TOP_HZ / f0_ref),
+                                     MIN_PARTIALS, MAX_PARTIALS))
+    # pass 1: rough grid to find per-partial detune, pass 2: sample the
+    # envelopes at the detuned positions (this is what makes high
+    # harmonics come out at the right level)
+    env_rough, hb_long, nyq_long = _harmonic_env(
         S_long, wg_long, sr / n_fft, f0, n_partials)
-    detune = _estimate_detune(S_long, env_long, hb_long, nyq_long,
+    detune = _estimate_detune(S_long, env_rough, hb_long, nyq_long,
                               f0, sr / n_fft)
+    env_long, hb_long, nyq_long = _harmonic_env(
+        S_long, wg_long, sr / n_fft, f0, n_partials, detune)
 
     # ---- short-window analysis (time detail for the attack) --------------
+    # Only useful when the short window can resolve the harmonic spacing
+    # (~172 Hz at 44.1k); below that it smears neighbours together and
+    # RUINS the attack spectrum, so bass relies on the long window plus
+    # the energy correction below.
     n_fft_short = 1024
-    S_short, wg_short = _stft_mag(y, n_fft_short, hop)
-    ns = min(n_frames, S_short.shape[1])
-    env_short, hb_short, nyq_short = _harmonic_env(
-        S_short[:, :ns], wg_short, sr / n_fft_short, f0[:ns], n_partials)
-
-    # crossfade: short window owns the attack, long window the sustain
     t = np.arange(n_frames) * hop / sr
     w_short = np.clip(1.0 - (t - ATTACK_END) / (ATTACK_FADE_END - ATTACK_END),
                       0.0, 1.0)
+    S_short, wg_short = _stft_mag(y, n_fft_short, hop)
+    ns = min(n_frames, S_short.shape[1])
     env = env_long.copy()
-    env[:ns] = (w_short[:ns, None] * env_short
-                + (1.0 - w_short[:ns, None]) * env_long[:ns])
+    if f0_ref >= 1.05 * sr / n_fft_short * 4:   # mainlobe fits between harmonics
+        env_short, hb_short, nyq_short = _harmonic_env(
+            S_short[:, :ns], wg_short, sr / n_fft_short, f0[:ns],
+            n_partials, detune)
+        env[:ns] = (w_short[:ns, None] * env_short
+                    + (1.0 - w_short[:ns, None]) * env_long[:ns])
+    else:
+        _, hb_short, nyq_short = _harmonic_env(
+            S_short[:, :ns], wg_short, sr / n_fft_short, f0[:ns], n_partials)
 
     # ---- noise residual ---------------------------------------------------
     band_edges = np.geomspace(40.0, sr / 2.0, n_noise_bands + 1)
@@ -227,6 +291,26 @@ def analyze_signal(
     noise_env = noise_long.copy()
     noise_env[:ns] = (w_short[:ns, None] * noise_short
                       + (1.0 - w_short[:ns, None]) * noise_long[:ns])
+
+    # ---- attack energy correction ------------------------------------------
+    # The analysis windows smear fast onsets; force the model's short-time
+    # energy to match the source's during the attack. The proxy scale
+    # cancels out by normalizing against the sustain, so only the SHAPE
+    # of the true envelope is imposed.
+    rt = np.array([np.sqrt(np.mean(y[max(0, i * hop - hop // 2)
+                                     : i * hop + hop // 2] ** 2) + 1e-18)
+                   for i in range(n_frames)])
+    proxy = np.sqrt(0.5 * np.sum(env ** 2, axis=1)
+                    + np.sum(noise_env ** 2, axis=1) + 1e-18)
+    ratio = rt / proxy
+    sustain = ratio[(t >= 0.3) & (rt > rt.max() * 0.05)]
+    if len(sustain) >= 4:
+        ratio = ratio / np.median(sustain)
+        corr = np.clip(ratio, 0.3, 3.0)
+        fade = np.clip(1.0 - (t - 0.25) / 0.1, 0.0, 1.0)  # only the attack
+        corr = 1.0 + (corr - 1.0) * fade
+        env *= corr[:, None]
+        noise_env *= corr[:, None]
 
     # ---- trim leading/trailing silence in the control frames ---------------
     total = env.sum(axis=1) + noise_env.sum(axis=1)
