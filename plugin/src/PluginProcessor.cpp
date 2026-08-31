@@ -90,6 +90,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         layout.add (std::make_unique<P> ("mod" + n + "amt", "Mod " + n + " Amount",
             juce::NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
     }
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "midiscale", "MIDI Scale", false));
     static const char* noteNames[12] = { "C", "C#", "D", "D#", "E", "F",
                                          "F#", "G", "G#", "A", "A#", "B" };
     for (int i = 0; i < 12; ++i)
@@ -102,6 +104,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
 void AddSynthProcessor::prepareToPlay (double sampleRate, int)
 {
     synth.setCurrentPlaybackSampleRate (sampleRate);
+    std::fill (std::begin (heldCount), std::end (heldCount), 0);
+    heldMaskDisplay.store (0);
 }
 
 void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
@@ -159,10 +163,32 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         if (auto pos = ph->getPosition())
             if (auto bpm = pos->getBpm())
                 p.bpm = (float) *bpm;
-    p.keyMask = 0;
+    // held-note tracking for MIDI scale mode
+    for (const auto meta : midi)
+    {
+        auto m = meta.getMessage();
+        if (m.isNoteOn())
+            ++heldCount[m.getNoteNumber() % 12];
+        else if (m.isNoteOff())
+            heldCount[m.getNoteNumber() % 12] =
+                juce::jmax (0, heldCount[m.getNoteNumber() % 12] - 1);
+        else if (m.isAllNotesOff() || m.isAllSoundOff())
+            std::fill (std::begin (heldCount), std::end (heldCount), 0);
+    }
+    int heldMask = 0;
     for (int i = 0; i < 12; ++i)
-        if (apvts.getRawParameterValue ("key" + juce::String (i))->load() > 0.5f)
-            p.keyMask |= (juce::uint16) (1u << i);
+        if (heldCount[i] > 0)
+            heldMask |= (1 << i);
+    heldMaskDisplay.store (heldMask);
+
+    p.midiScale = get ("midiscale") > 0.5f;
+    p.keyMask = 0;
+    if (p.midiScale)
+        p.keyMask = (juce::uint16) heldMask;
+    else
+        for (int i = 0; i < 12; ++i)
+            if (apvts.getRawParameterValue ("key" + juce::String (i))->load() > 0.5f)
+                p.keyMask |= (juce::uint16) (1u << i);
 
     bool anyActive = false;
     for (int i = 0; i < synth.getNumVoices(); ++i)
@@ -181,6 +207,55 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
 
     buffer.applyGain (apvts.getRawParameterValue ("gain")->load());
+}
+
+void AddSynthProcessor::randomizeParams()
+{
+    auto& rng = juce::Random::getSystemRandom();
+    auto set = [this] (const juce::String& id, float value)
+    {
+        if (auto* p = apvts.getParameter (id))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (
+                p->getNormalisableRange().convertTo0to1 (value));
+            p->endChangeGesture();
+        }
+    };
+    auto uni = [&rng] (float lo, float hi) { return lo + (hi - lo) * rng.nextFloat(); };
+
+    // sound parameters, in musical (not full-range) spans
+    set ("speed",    std::exp (uni (std::log (0.25f), std::log (2.0f))));
+    set ("blur",     std::pow (rng.nextFloat(), 2.0f) * 0.8f);
+    set ("attack",   std::pow (rng.nextFloat(), 2.0f) * 0.6f);
+    set ("release",  uni (0.05f, 0.9f));
+    set ("tilt",     uni (-8.0f, 8.0f));
+    set ("oddeven",  uni (-1.0f, 1.0f));
+    set ("stretch",  std::pow (rng.nextFloat(), 3.0f) * 0.01f);
+    set ("partials", uni (8.0f, 128.0f));
+    set ("drift",    rng.nextFloat() * 0.7f);
+    set ("pitchenv", uni (0.0f, 1.5f));
+    set ("noise",    uni (0.2f, 1.5f));
+    set ("width",    rng.nextFloat());
+    set ("spreadx",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
+    set ("spready",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
+    set ("spreadn",  (float) rng.nextInt ({ 2, 9 }));
+    set ("bend",     std::pow (rng.nextFloat(), 2.0f) * 0.6f);
+    set ("loopstart", rng.nextFloat() * 0.9f);
+    set ("looplen",  rng.nextBool() ? 0.0f : uni (0.05f, 0.6f));
+    set ("lfo1rate", std::exp (uni (std::log (0.05f), std::log (8.0f))));
+    set ("lfo2rate", std::exp (uni (std::log (0.05f), std::log (8.0f))));
+
+    // mod matrix: ~60% of slots active with random routing
+    for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
+    {
+        auto n = juce::String (i);
+        bool active = rng.nextFloat() < 0.6f;
+        set ("mod" + n + "src", active ? (float) rng.nextInt ({ 1, 8 }) : 0.0f);
+        set ("mod" + n + "dst", (float) rng.nextInt ({ 0, 12 }));
+        set ("mod" + n + "amt", active ? uni (-0.8f, 0.8f) : 0.0f);
+    }
+    // gain, morph x/y, scale keys, sync toggles and midiscale left alone
 }
 
 std::vector<std::pair<float, float>> AddSynthProcessor::getActiveVoiceCursors() const

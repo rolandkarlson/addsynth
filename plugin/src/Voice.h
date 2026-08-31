@@ -39,6 +39,7 @@ public:
         float spreadX = 0.0f, spreadY = 0.0f; // per-voice morph offset
         int   spreadN = 5;                    // voice index cycle length
         juce::uint16 keyMask = 0;  // enabled pitch classes (bit 0 = C); 0 = bypass
+        bool  midiScale = false;   // keyMask mirrors currently held notes
         float bend = 0.05f;        // glide time (s) between quantized notes
         float width = 0.0f;        // stereo: per-partial pan + L/R micro-detune
         float loopStart = 0.4f;    // sustain loop start, 0..1 of the envelope
@@ -94,6 +95,7 @@ public:
         noteRandom = rng.nextFloat();
         quantMidi = (float) midiNote;
         firstQuant = true;
+        lastHeldMask = params.keyMask;
         framePos = 0.0;
         frameIncBase = field->controlRate / sr;
         releasing = false;
@@ -362,10 +364,16 @@ private:
         // ---- scale quantizer: snap the sounding pitch to the enabled
         // pitch classes (any octave), gliding over `bend` seconds --------
         float soundingMidi = (float) midiNoteNum + envSemis;
-        float targetMidi = params.keyMask != 0
-                         ? nearestAllowedMidi (soundingMidi, params.keyMask)
+        juce::uint16 mask = params.keyMask;
+        if (params.midiScale)
+        {
+            if (mask != 0) lastHeldMask = mask;   // chord released: keep
+            else           mask = lastHeldMask;   // quantizing the tail
+        }
+        float targetMidi = mask != 0
+                         ? nearestAllowedMidi (soundingMidi, mask)
                          : soundingMidi;
-        if (firstQuant || params.keyMask == 0)
+        if (firstQuant || mask == 0)
         {
             quantMidi = targetMidi;   // no glide at note start / when bypassed
             firstQuant = false;
@@ -475,6 +483,7 @@ private:
     std::atomic<int>* noteCounter = nullptr;
     int voiceIndex = 0;
     int midiNoteNum = 60;
+    juce::uint16 lastHeldMask = 0;
     float velocity01 = 1.0f, noteRandom = 0.0f;
     float quantMidi = 60.0f;
     bool firstQuant = true;

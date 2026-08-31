@@ -132,9 +132,11 @@ private:
     Knob lfo1Knob, lfo2Knob;
     juce::Rectangle<int> modPanelArea;
 
-    juce::ToggleButton syncLoopBtn { "loop sync" }, syncSpeedBtn { "speed sync" };
+    juce::ToggleButton syncLoopBtn { "loop sync" }, syncSpeedBtn { "speed sync" },
+                       midiScaleBtn { "midi scale" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
-        syncLoopA, syncSpeedA;
+        syncLoopA, syncSpeedA, midiScaleA;
+    juce::TextButton randomButton { "randomize" };
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AddSynthEditor)

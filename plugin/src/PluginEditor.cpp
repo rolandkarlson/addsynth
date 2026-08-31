@@ -292,8 +292,12 @@ int ScaleKeyboard::hitKey (juce::Point<float> pos) const
 
 void ScaleKeyboard::paint (juce::Graphics& g)
 {
-    auto isOn = [this] (int pc)
+    const bool live = proc.isMidiScaleMode();
+    const int held = proc.getHeldMask();
+    auto isOn = [this, live, held] (int pc)
     {
+        if (live)
+            return (held >> pc & 1) != 0;
         return proc.apvts.getRawParameterValue ("key" + juce::String (pc))
                    ->load() > 0.5f;
     };
@@ -326,6 +330,8 @@ void ScaleKeyboard::paint (juce::Graphics& g)
 
 void ScaleKeyboard::mouseDown (const juce::MouseEvent& e)
 {
+    if (proc.isMidiScaleMode())
+        return;  // keys mirror held MIDI notes; clicks are inactive
     int pc = hitKey (e.position);
     if (pc < 0) return;
     if (auto* param = proc.apvts.getParameter ("key" + juce::String (pc)))
@@ -398,6 +404,19 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         proc.apvts, "syncloop", syncLoopBtn);
     syncSpeedA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         proc.apvts, "syncspeed", syncSpeedBtn);
+    for (auto* t : { &midiScaleBtn })
+    {
+        t->setColour (juce::ToggleButton::textColourId, theme::ink);
+        t->setColour (juce::ToggleButton::tickColourId, theme::ink);
+        t->setColour (juce::ToggleButton::tickDisabledColourId,
+                      theme::ink.withAlpha (0.4f));
+        addAndMakeVisible (*t);
+    }
+    midiScaleA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        proc.apvts, "midiscale", midiScaleBtn);
+
+    addAndMakeVisible (randomButton);
+    randomButton.onClick = [this] { proc.randomizeParams(); };
 
     // ---- modulation matrix strip ----
     auto fillCombo = [] (juce::ComboBox& c, const juce::StringArray& items)
@@ -563,14 +582,21 @@ void AddSynthEditor::resized()
     r.removeFromLeft (12);
     sidePanelArea = r;
     auto side = r.reduced (12, 10);
-    addButton.setBounds (side.removeFromTop (30).removeFromLeft (170));
+    {
+        auto topRow = side.removeFromTop (30);
+        addButton.setBounds (topRow.removeFromLeft (170));
+        topRow.removeFromLeft (8);
+        randomButton.setBounds (topRow.removeFromLeft (120));
+    }
     side.removeFromTop (2);
     hint.setBounds (side.removeFromTop (22));
     side.removeFromTop (2);
 
     auto toggles = side.removeFromBottom (24);
-    syncLoopBtn.setBounds (toggles.removeFromLeft (toggles.getWidth() / 2));
-    syncSpeedBtn.setBounds (toggles);
+    auto tw = toggles.getWidth() / 3;
+    syncLoopBtn.setBounds (toggles.removeFromLeft (tw));
+    syncSpeedBtn.setBounds (toggles.removeFromLeft (tw));
+    midiScaleBtn.setBounds (toggles);
 
     const int cols = 4, rows = 5;
     auto cellW = side.getWidth() / cols;

@@ -51,6 +51,17 @@ public:
     // effective pad positions of active voices (for the pad's ghost cursors)
     std::vector<std::pair<float, float>> getActiveVoiceCursors() const;
 
+    // randomize mod matrix + sound parameters (message thread; gain,
+    // morph cursor, scale keys and sync toggles are left alone)
+    void randomizeParams();
+
+    // MIDI scale mode state for the keyboard UI
+    bool isMidiScaleMode() const
+    {
+        return apvts.getRawParameterValue ("midiscale")->load() > 0.5f;
+    }
+    int getHeldMask() const { return heldMaskDisplay.load(); }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -60,6 +71,11 @@ private:
     juce::Synthesiser synth;
     std::atomic<int> noteCounter { 0 };
     double lfoPhase1 = 0.0, lfoPhase2 = 0.25;
+
+    // MIDI scale mode: pitch classes of currently held notes (audio
+    // thread tracks; UI reads the atomic mask for display)
+    int heldCount[12] {};
+    std::atomic<int> heldMaskDisplay { 0 };
 
     std::vector<Slot> slots;
     juce::File lastModelDir;
