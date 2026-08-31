@@ -60,6 +60,7 @@ def import_file(
     candidates = []  # (score, meets_gates, model)
     max_attempts = per_file * 6
     passing = 0
+    max_rms_seen = 0.0
 
     for attempt in range(max_attempts):
         if passing >= per_file:
@@ -76,7 +77,9 @@ def import_file(
         except Exception as e:
             log(f"    [{stem}] load failed at {start:.1f}s: {e}")
             continue
-        if len(y) == 0 or float(np.sqrt(np.mean(y ** 2))) < MIN_RMS:
+        rms = float(np.sqrt(np.mean(y ** 2))) if len(y) else 0.0
+        max_rms_seen = max(max_rms_seen, rms)
+        if rms < MIN_RMS:
             continue
 
         try:
@@ -101,7 +104,11 @@ def import_file(
             break  # short file: one slice is all there is
 
     if not candidates:
-        log(f"  {stem}: no usable pitched slices found, skipped")
+        if max_rms_seen < MIN_RMS:
+            log(f"  {stem}: the audio is SILENT (peak rms "
+                f"{max_rms_seen:.6f}) — check the export/bounce")
+        else:
+            log(f"  {stem}: no usable pitched slices found, skipped")
         return []
 
     # prefer gate-passing slices, then higher score
