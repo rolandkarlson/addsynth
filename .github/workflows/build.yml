@@ -23,6 +23,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item -Recurse "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
           Copy-Item "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.exe" dist/
+          if (Test-Path models) { Copy-Item -Recurse models dist/ }
           @"
           AddSynth (Windows)
           ==================
@@ -57,6 +58,7 @@ jobs:
           cp -R "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
           cp -R "plugin/build/AddSynth_artefacts/Release/AU/AddSynth.component" dist/
           cp -R "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.app" dist/
+          [ -d models ] && cp -R models dist/ || true
 
       - uses: actions/upload-artifact@v4
         with:

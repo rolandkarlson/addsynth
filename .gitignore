@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 plugin/build/
 out/
-models/
+models/**/previews/
+models/lpo_cd4/
+models/_old_v1/
 mutations/
 *.log
 .DS_Store
