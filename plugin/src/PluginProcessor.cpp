@@ -38,7 +38,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
     layout.add (std::make_unique<P> ("blur", "Blur",
         juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.0f));
     layout.add (std::make_unique<P> ("attack", "Attack",
-        juce::NormalisableRange<float> (0.001f, 2.0f, 0.001f, 0.4f), 0.001f));
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.0f));
     layout.add (std::make_unique<P> ("tilt", "Tilt",
         juce::NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f));
     layout.add (std::make_unique<P> ("oddeven", "Odd/Even",
@@ -46,7 +46,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
     layout.add (std::make_unique<P> ("stretch", "Stretch",
         juce::NormalisableRange<float> (0.0f, 0.02f, 0.00001f, 0.3f), 0.0f));
     layout.add (std::make_unique<P> ("partials", "Partials",
-        juce::NormalisableRange<float> (1.0f, 128.0f, 0.1f, 0.5f), 128.0f));
+        juce::NormalisableRange<float> (1.0f, 192.0f, 0.1f, 0.5f), 192.0f));
     layout.add (std::make_unique<P> ("drift", "Drift",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
     layout.add (std::make_unique<P> ("pitchenv", "Pitch Env",
@@ -61,7 +61,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
     layout.add (std::make_unique<P> ("bend", "Bend",
         juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.05f));
     layout.add (std::make_unique<P> ("width", "Width",
-        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.35f));
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
     layout.add (std::make_unique<P> ("loopstart", "Loop Start",
         juce::NormalisableRange<float> (0.0f, 0.95f, 0.001f), 0.4f));
     layout.add (std::make_unique<P> ("looplen", "Loop Len",

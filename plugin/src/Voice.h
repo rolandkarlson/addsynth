@@ -19,20 +19,20 @@ struct AddSound : public juce::SynthesiserSound
 class AddVoice : public juce::SynthesiserVoice
 {
 public:
-    static constexpr int maxPartials = 128;
+    static constexpr int maxPartials = 192;
     static constexpr int maxBands = 48;
 
     struct Params
     {
         float noise = 1.0f;        // noise layer gain
         float release = 0.08f;     // s
-        float attack = 0.001f;     // s
+        float attack = 0.0f;       // s (0 = instant)
         float speed = 1.0f;        // envelope playback rate, 0 = freeze
         float blur = 0.0f;         // envelope lag, s
         float tiltDbOct = 0.0f;    // spectral tilt
         float oddEven = 0.0f;      // -1 evens only .. +1 odds only
         float stretchB = 0.0f;     // extra inharmonicity
-        float partials = 128.0f;   // number of audible partials
+        float partials = 192.0f;   // number of audible partials
         float drift = 0.0f;        // per-partial shimmer depth 0..1
         float pitchEnvAmt = 1.0f;  // scale of the analyzed pitch track
         float cursorX = 0.5f, cursorY = 0.5f;
@@ -133,6 +133,13 @@ public:
         currentFrame = -1;
         ctrlCountdown = 0;
         updateControlFrame (0);
+        if (params.attack <= 0.0005f)
+        {
+            // instant attack: start directly on the model's first frame
+            attackGain = 1.0f;
+            for (int k = 0; k < nP; ++k) amp0[k] = amp1[k];
+            for (int b = 0; b < nB; ++b) ng0[b] = ng1[b];
+        }
 
         auto nyq = sr * 0.45;
         for (int b = 0; b < nB; ++b)

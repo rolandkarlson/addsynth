@@ -21,7 +21,7 @@ import librosa
 from .model import AdditiveModel
 
 DEFAULT_N_NOISE_BANDS = 48
-MAX_PARTIALS = 128
+MAX_PARTIALS = 192
 MIN_PARTIALS = 24
 TARGET_TOP_HZ = 16000.0
 

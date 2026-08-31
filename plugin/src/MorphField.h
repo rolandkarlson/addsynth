@@ -71,7 +71,7 @@ struct MorphField
             if ((int) f->layers.size() >= maxLayers) break;
             auto& m = *s.model;
             f->controlRate = std::max (f->controlRate, m.controlRate);
-            f->nPartials = std::max (f->nPartials, std::min (m.nPartials, 128));
+            f->nPartials = std::max (f->nPartials, std::min (m.nPartials, 192));
             if (m.nNoiseBands > f->nBands)
             {
                 f->nBands = std::min (m.nNoiseBands, 48);
