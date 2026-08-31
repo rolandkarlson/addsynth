@@ -89,7 +89,8 @@ def _harmonic_env(S: np.ndarray, win_gain: float, bin_hz: float,
     c = np.clip(np.round(harm_bin).astype(int), 1, n_bins - 2)
     sa, sb, sc = S[c - 1, cols], S[c, cols], S[c + 1, cols]
     den = sa - 2 * sb + sc
-    delta = np.where(np.abs(den) > 1e-12, 0.5 * (sa - sc) / den, 0.0)
+    safe = np.where(np.abs(den) > 1e-12, den, 1.0)
+    delta = np.where(np.abs(den) > 1e-12, 0.5 * (sa - sc) / safe, 0.0)
     vertex = sb - 0.25 * (sa - sc) * delta
     on_peak = (sb >= sa) & (sb >= sc) & (sb > 0) & (np.abs(delta) <= 0.6)
     mag = np.where(on_peak, np.maximum(vertex, 0.0), mag)
@@ -245,7 +246,18 @@ def analyze_signal(
     f0 = np.resize(f0, n_frames)
     if f0_override is None:
         f0 = _refine_f0(S_long, sr / n_fft, f0)
+        # octave-error guard: if the half-f0 grid captures significant
+        # energy at the in-between positions, pyin picked harmonic 2 —
+        # drop an octave (else half the true harmonics get skipped)
         f0_ref = float(np.median(f0))
+        if f0_ref >= 60.0:
+            env_h, _, _ = _harmonic_env(S_long, wg_long, sr / n_fft,
+                                        f0 * 0.5, min(2 * n_partials, 256))
+            e_between = float((env_h[:, 0::2] ** 2).sum())  # odd k of f0/2
+            e_ongrid = float((env_h[:, 1::2] ** 2).sum())   # = the f0 grid
+            if e_ongrid > 0 and e_between / e_ongrid > 0.1:
+                f0 = f0 * 0.5
+                f0_ref *= 0.5
         if n_partials_auto:
             n_partials = int(np.clip(round(TARGET_TOP_HZ / f0_ref),
                                      MIN_PARTIALS, MAX_PARTIALS))
@@ -266,8 +278,24 @@ def analyze_signal(
     # the energy correction below.
     n_fft_short = 1024
     t = np.arange(n_frames) * hop / sr
-    w_short = np.clip(1.0 - (t - ATTACK_END) / (ATTACK_FADE_END - ATTACK_END),
-                      0.0, 1.0)
+    # true short-time RMS (5.8 ms resolution) — used for onset detection
+    # and the energy correction below
+    rt = np.array([np.sqrt(np.mean(y[max(0, i * hop - hop // 2)
+                                     : i * hop + hop // 2] ** 2) + 1e-18)
+                   for i in range(n_frames)])
+    # every onset gets short-window treatment, not just the first
+    onset_frames = list(librosa.onset.onset_detect(
+        y=y, sr=sr, hop_length=hop, backtrack=False, units="frames"))
+    if 0 not in onset_frames:
+        onset_frames.insert(0, 0)
+    w_short = np.zeros(n_frames)
+    cr = sr / hop
+    for o in onset_frames:
+        t_rel = (np.arange(n_frames) - o) / cr
+        w = np.where(t_rel < ATTACK_END, (t_rel >= -0.02).astype(float),
+                     np.clip(1.0 - (t_rel - ATTACK_END)
+                             / (ATTACK_FADE_END - ATTACK_END), 0.0, 1.0))
+        w_short = np.maximum(w_short, w)
     S_short, wg_short = _stft_mag(y, n_fft_short, hop)
     ns = min(n_frames, S_short.shape[1])
     env = env_long.copy()
@@ -292,23 +320,18 @@ def analyze_signal(
     noise_env[:ns] = (w_short[:ns, None] * noise_short
                       + (1.0 - w_short[:ns, None]) * noise_long[:ns])
 
-    # ---- attack energy correction ------------------------------------------
-    # The analysis windows smear fast onsets; force the model's short-time
-    # energy to match the source's during the attack. The proxy scale
-    # cancels out by normalizing against the sustain, so only the SHAPE
-    # of the true envelope is imposed.
-    rt = np.array([np.sqrt(np.mean(y[max(0, i * hop - hop // 2)
-                                     : i * hop + hop // 2] ** 2) + 1e-18)
-                   for i in range(n_frames)])
+    # ---- energy correction ---------------------------------------------------
+    # The analysis windows smear fast onsets and gaps between hits; force
+    # the model's short-time energy to follow the source's true envelope
+    # over the WHOLE duration. The proxy scale cancels out by normalizing
+    # against the typical loud region, so only the SHAPE is imposed.
     proxy = np.sqrt(0.5 * np.sum(env ** 2, axis=1)
                     + np.sum(noise_env ** 2, axis=1) + 1e-18)
     ratio = rt / proxy
-    sustain = ratio[(t >= 0.3) & (rt > rt.max() * 0.05)]
-    if len(sustain) >= 4:
-        ratio = ratio / np.median(sustain)
-        corr = np.clip(ratio, 0.3, 3.0)
-        fade = np.clip(1.0 - (t - 0.25) / 0.1, 0.0, 1.0)  # only the attack
-        corr = 1.0 + (corr - 1.0) * fade
+    loud = ratio[rt > rt.max() * 0.2]
+    if len(loud) >= 4:
+        ratio = ratio / np.median(loud)
+        corr = np.clip(ratio, 0.05, 6.0)
         env *= corr[:, None]
         noise_env *= corr[:, None]
 
