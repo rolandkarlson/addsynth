@@ -74,6 +74,15 @@ cd "$REPO" || exit 1
   echo "total: $total model(s)"
 } &gt;&gt;"$LOG" 2&gt;&amp;1
 total=$(tail -1 "$LOG" | grep -o '[0-9]*' | head -1)
+if [ "${total:-0}" -gt 0 ]; then
+  (
+    cd "$REPO" &amp;&amp;
+    git add models &amp;&amp;
+    git -c user.name="Roland Karlson" -c user.email="roland@progmatic.ee" \
+        commit -qm "models: quick action import ($total new) [skip ci]" &amp;&amp;
+    git push -q
+  ) &gt;&gt;"$LOG" 2&gt;&amp;1
+fi
 osascript -e "display notification \"$total model(s) written to synth-ideas/models\" with title \"AddSynth\" sound name \"Glass\""</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
