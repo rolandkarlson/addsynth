@@ -18,6 +18,7 @@ def _clone(m: AdditiveModel, **overrides) -> AdditiveModel:
         f0_track=m.f0_track.copy(),
         noise_env=m.noise_env.copy(),
         noise_band_freqs=m.noise_band_freqs.copy(),
+        detune=m.detune.copy(),
         f0_ref=m.f0_ref,
         control_rate=m.control_rate,
         inharmonicity=m.inharmonicity,
@@ -61,9 +62,11 @@ def morph(a: AdditiveModel, b: AdditiveModel, t: float,
     eps = 1e-7
     env = np.exp((1 - t) * np.log(ea + eps) + t * np.log(eb + eps)) - eps
     noise = np.exp((1 - t) * np.log(na + eps) + t * np.log(nb_ + eps)) - eps
+    det = ((1 - t) * a.detune[:npart] + t * b.detune[:npart]).astype(np.float32)
     return _clone(
         a,
         env=np.maximum(env, 0).astype(np.float32),
+        detune=det,
         noise_env=np.maximum(noise, 0).astype(np.float32),
         f0_track=((1 - t) * fa + t * fb).astype(np.float32),
         noise_band_freqs=a.noise_band_freqs[:nb].copy(),

@@ -20,7 +20,7 @@ class AddVoice : public juce::SynthesiserVoice
 {
 public:
     static constexpr int maxPartials = 128;
-    static constexpr int maxBands = 32;
+    static constexpr int maxBands = 48;
 
     struct Params
     {
@@ -414,7 +414,10 @@ private:
             amp0[k] = amp1[k];
 
             float kk = (float) (k + 1);
-            float freq = baseFreq * kk * std::sqrt (1.0f + B * kk * kk);
+            float pdet = 0.0f;
+            for (size_t li = 0; li < nLayers; ++li)
+                pdet += wts[li] * fld.layers[li].detune[(size_t) k];
+            float freq = baseFreq * kk * std::sqrt (1.0f + B * kk * kk) * pdet;
             if (freq >= nyq)
             {
                 lag[k] += (0.0f - lag[k]) * blurAlpha;

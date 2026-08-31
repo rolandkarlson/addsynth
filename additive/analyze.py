@@ -3,10 +3,14 @@
 Pipeline:
   1. load mono audio
   2. pitch-track with pYIN -> f0 per frame, f0_ref = median voiced f0
-  3. STFT; for each frame, read the magnitude at each harmonic k*f0
-     (linear interpolation between bins) -> envelope matrix
-  4. residual: zero the spectrum near harmonics, average what remains
-     into log-spaced bands -> noise band envelopes
+  3. long-window STFT (4096): harmonic amplitudes at k*f0 per frame,
+     plus per-partial DETUNE (actual spectral peak vs the ideal grid)
+  4. short-window STFT (1024): same harmonic sampling with ~4x better
+     time resolution; the first ~150 ms of the envelopes crossfade from
+     the short-window analysis so attacks keep their snap
+  5. residual (spectrum minus harmonics) -> 48 log-spaced noise bands
+  6. partial count adapts to pitch: enough harmonics to reach ~16 kHz
+     (24..128), so bass slices keep their top octaves
 """
 
 from __future__ import annotations
@@ -16,13 +20,113 @@ import librosa
 
 from .model import AdditiveModel
 
-DEFAULT_N_PARTIALS = 64
-DEFAULT_N_NOISE_BANDS = 24
+DEFAULT_N_NOISE_BANDS = 48
+MAX_PARTIALS = 128
+MIN_PARTIALS = 24
+TARGET_TOP_HZ = 16000.0
+
+# transient crossfade: short-window analysis rules until ATTACK_END,
+# fades out by ATTACK_FADE_END
+ATTACK_END = 0.08
+ATTACK_FADE_END = 0.18
+
+
+def _stft_mag(y: np.ndarray, n_fft: int, hop: int):
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop, window="hann"))
+    win_gain = np.sum(np.hanning(n_fft)) / 2.0
+    return S, win_gain
+
+
+def _harmonic_env(S: np.ndarray, win_gain: float, bin_hz: float,
+                  f0: np.ndarray, n_partials: int):
+    """Sample |STFT| at every harmonic k*f0 -> (n_frames, n_partials)."""
+    n_bins, n_frames = S.shape
+    k = np.arange(1, n_partials + 1)[:, None]            # (P, 1)
+    harm_bin = (k * f0[None, :n_frames]) / bin_hz        # fractional bin
+    below_nyq = harm_bin < (n_bins - 2)
+
+    lo = np.clip(np.floor(harm_bin).astype(int), 0, n_bins - 2)
+    frac = np.clip(harm_bin - lo, 0.0, 1.0)
+    cols = np.arange(n_frames)[None, :]
+    mag = S[lo, cols] * (1 - frac) + S[lo + 1, cols] * frac
+    env = np.where(below_nyq, mag / win_gain, 0.0).T     # (F, P)
+    return env, harm_bin, below_nyq
+
+
+def _estimate_detune(S: np.ndarray, env: np.ndarray, harm_bin: np.ndarray,
+                     below_nyq: np.ndarray, f0: np.ndarray,
+                     bin_hz: float) -> np.ndarray:
+    """Per-partial frequency ratio vs the ideal harmonic grid.
+
+    For each partial, at its strongest frames, find the actual spectral
+    peak near k*f0 (parabolic interpolation) and take the median ratio.
+    Clamped to +-6% — larger deviations mean the 'harmonic' was really
+    some other source, and 1.0 is safer.
+    """
+    n_bins = S.shape[0]
+    n_partials = env.shape[1]
+    det = np.ones(n_partials, dtype=np.float32)
+    env_top = float(env.max())
+    if env_top <= 0:
+        return det
+
+    for k in range(n_partials):
+        amps = env[:, k]
+        if amps.max() < env_top * 2e-3:
+            continue
+        strongest = np.argsort(amps)[-8:]
+        ratios = []
+        for fi in strongest:
+            if not below_nyq[k, fi]:
+                continue
+            hb = harm_bin[k, fi]
+            w = max(2, int(0.45 * f0[fi] / bin_hz))
+            lo = int(max(1, hb - w))
+            hi = int(min(n_bins - 2, hb + w))
+            if hi <= lo + 1:
+                continue
+            pk = int(np.argmax(S[lo:hi + 1, fi])) + lo
+            if pk <= lo or pk >= hi:
+                continue  # peak ran into the search edge: unreliable
+            a, b, c = S[pk - 1, fi], S[pk, fi], S[pk + 1, fi]
+            denom = a - 2 * b + c
+            d = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
+            ratios.append((pk + d) / hb)
+        if ratios:
+            det[k] = float(np.clip(np.median(ratios), 0.94, 1.06))
+    return det
+
+
+def _noise_bands(S: np.ndarray, win_gain: float, bin_hz: float,
+                 harm_bin: np.ndarray, below_nyq: np.ndarray,
+                 band_edges: np.ndarray) -> np.ndarray:
+    """Zero the spectrum near harmonics, average the rest into bands."""
+    n_bins, n_frames = S.shape
+    S_noise = S.copy()
+    guard = 2  # +-2 bins around each harmonic
+    for fi in range(n_frames):
+        hb = harm_bin[:, fi][below_nyq[:, fi]]
+        if len(hb) == 0:
+            continue
+        centers = np.round(hb).astype(int)
+        for g in range(-guard, guard + 1):
+            b = np.clip(centers + g, 0, n_bins - 1)
+            S_noise[b, fi] = 0.0
+
+    n_bands = len(band_edges) - 1
+    bin_freqs = np.arange(n_bins) * bin_hz
+    out = np.zeros((n_frames, n_bands))
+    for b in range(n_bands):
+        sel = (bin_freqs >= band_edges[b]) & (bin_freqs < band_edges[b + 1])
+        if not np.any(sel):
+            continue
+        out[:, b] = np.sqrt(np.mean(S_noise[sel, :] ** 2, axis=0)) / win_gain
+    return out
 
 
 def analyze(
     path: str,
-    n_partials: int = DEFAULT_N_PARTIALS,
+    n_partials: int | None = None,
     n_noise_bands: int = DEFAULT_N_NOISE_BANDS,
     fmin: float = 50.0,
     fmax: float = 2000.0,
@@ -45,7 +149,7 @@ def analyze(
 def analyze_signal(
     y: np.ndarray,
     sr: int,
-    n_partials: int = DEFAULT_N_PARTIALS,
+    n_partials: int | None = None,   # None = adapt to pitch (24..128)
     n_noise_bands: int = DEFAULT_N_NOISE_BANDS,
     fmin: float = 50.0,
     fmax: float = 2000.0,
@@ -78,60 +182,51 @@ def analyze_signal(
                 "Try f0_override or different fmin/fmax."
             )
         f0_ref = float(np.median(f0[voiced]))
-        # quality stats for slice selection (batch import)
         voiced_fraction = float(np.mean(voiced))
         semitones = 12 * np.log2(f0[voiced] / f0_ref)
         pitch_stability = float(np.mean(np.abs(semitones) <= 1.0))
-        # fill unvoiced gaps by interpolating between voiced frames
         idx = np.arange(len(f0))
         f0 = np.interp(idx, idx[voiced], f0[voiced])
 
-    # ---- STFT ------------------------------------------------------------
-    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop, window="hann"))
-    n_bins, n_frames = S.shape
+    # adaptive partial count: reach ~16 kHz whatever the pitch
+    if n_partials is None:
+        n_partials = int(np.clip(round(TARGET_TOP_HZ / f0_ref),
+                                 MIN_PARTIALS, MAX_PARTIALS))
+
+    # ---- long-window analysis (frequency detail, detune) -----------------
+    S_long, wg_long = _stft_mag(y, n_fft, hop)
+    n_frames = S_long.shape[1]
     f0 = np.resize(f0, n_frames)
-    bin_hz = sr / n_fft
+    env_long, hb_long, nyq_long = _harmonic_env(
+        S_long, wg_long, sr / n_fft, f0, n_partials)
+    detune = _estimate_detune(S_long, env_long, hb_long, nyq_long,
+                              f0, sr / n_fft)
 
-    # Hann window: sum(w) = N/2, and STFT magnitude of a sinusoid with
-    # amplitude A peaks at A * sum(w) / 2. Undo that to get amplitudes.
-    win_gain = np.sum(np.hanning(n_fft)) / 2.0
+    # ---- short-window analysis (time detail for the attack) --------------
+    n_fft_short = 1024
+    S_short, wg_short = _stft_mag(y, n_fft_short, hop)
+    ns = min(n_frames, S_short.shape[1])
+    env_short, hb_short, nyq_short = _harmonic_env(
+        S_short[:, :ns], wg_short, sr / n_fft_short, f0[:ns], n_partials)
 
-    # ---- harmonic envelopes ------------------------------------------------
-    k = np.arange(1, n_partials + 1)[:, None]            # (P, 1)
-    harm_hz = k * f0[None, :]                            # (P, F)
-    harm_bin = harm_hz / bin_hz                          # fractional bin
-    below_nyq = harm_bin < (n_bins - 2)
+    # crossfade: short window owns the attack, long window the sustain
+    t = np.arange(n_frames) * hop / sr
+    w_short = np.clip(1.0 - (t - ATTACK_END) / (ATTACK_FADE_END - ATTACK_END),
+                      0.0, 1.0)
+    env = env_long.copy()
+    env[:ns] = (w_short[:ns, None] * env_short
+                + (1.0 - w_short[:ns, None]) * env_long[:ns])
 
-    lo = np.clip(np.floor(harm_bin).astype(int), 0, n_bins - 2)
-    frac = np.clip(harm_bin - lo, 0.0, 1.0)
-    cols = np.arange(n_frames)[None, :]
-    mag = S[lo, cols] * (1 - frac) + S[lo + 1, cols] * frac
-    env = np.where(below_nyq, mag / win_gain, 0.0).T     # (F, P)
-
-    # ---- noise residual ----------------------------------------------------
-    S_noise = S.copy()
-    guard = 2  # bins zeroed on each side of a harmonic
-    max_harm = int(np.max(harm_bin[below_nyq])) if np.any(below_nyq) else 0
-    freqs_bin = np.arange(n_bins)
-    for fi in range(n_frames):
-        hb = harm_bin[:, fi][below_nyq[:, fi]]
-        if len(hb) == 0:
-            continue
-        centers = np.round(hb).astype(int)
-        for g in range(-guard, guard + 1):
-            b = np.clip(centers + g, 0, n_bins - 1)
-            S_noise[b, fi] = 0.0
-
+    # ---- noise residual ---------------------------------------------------
     band_edges = np.geomspace(40.0, sr / 2.0, n_noise_bands + 1)
     band_centers = np.sqrt(band_edges[:-1] * band_edges[1:])
-    noise_env = np.zeros((n_frames, n_noise_bands))
-    bin_freqs = freqs_bin * bin_hz
-    for b in range(n_noise_bands):
-        sel = (bin_freqs >= band_edges[b]) & (bin_freqs < band_edges[b + 1])
-        if not np.any(sel):
-            continue
-        # RMS magnitude of surviving bins in the band, window-compensated
-        noise_env[:, b] = np.sqrt(np.mean(S_noise[sel, :] ** 2, axis=0)) / win_gain
+    noise_long = _noise_bands(S_long, wg_long, sr / n_fft,
+                              hb_long, nyq_long, band_edges)
+    noise_short = _noise_bands(S_short[:, :ns], wg_short, sr / n_fft_short,
+                               hb_short, nyq_short, band_edges)
+    noise_env = noise_long.copy()
+    noise_env[:ns] = (w_short[:ns, None] * noise_short
+                      + (1.0 - w_short[:ns, None]) * noise_long[:ns])
 
     # ---- trim leading/trailing silence in the control frames ---------------
     total = env.sum(axis=1) + noise_env.sum(axis=1)
@@ -145,6 +240,7 @@ def analyze_signal(
         f0_track=(f0 / f0_ref).astype(np.float32),
         noise_env=noise_env.astype(np.float32),
         noise_band_freqs=band_centers.astype(np.float32),
+        detune=detune,
         f0_ref=f0_ref,
         control_rate=control_rate,
         name=name,

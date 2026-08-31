@@ -74,7 +74,7 @@ def render_note(
             ratio = np.ones(n)
 
         k = np.arange(1, model.n_partials + 1, dtype=np.float64)
-        kfac = k * np.sqrt(1.0 + B * k * k)                       # (P,)
+        kfac = k * np.sqrt(1.0 + B * k * k) * model.detune        # (P,)
         freqs = (f0 * ratio)[:, None] * kfac[None, :]             # (N, P)
         amp = np.where(freqs < sr / 2 * 0.98, amp, 0.0)           # anti-alias
         phase = 2 * np.pi * np.cumsum(freqs, axis=0) / sr

@@ -19,6 +19,7 @@ struct MorphField
         float x = 0.5f, y = 0.5f;
         float inharmonicity = 0.0f;
         juce::String name;
+        std::vector<float> detune;    // nPartials, freq ratio vs k*f0
         std::vector<float> logEnv;    // nFrames * nPartials
         std::vector<float> logNoise;  // nFrames * nBands
         std::vector<float> f0Track;   // nFrames, ratio
@@ -73,7 +74,7 @@ struct MorphField
             f->nPartials = std::max (f->nPartials, std::min (m.nPartials, 128));
             if (m.nNoiseBands > f->nBands)
             {
-                f->nBands = std::min (m.nNoiseBands, 32);
+                f->nBands = std::min (m.nNoiseBands, 48);
                 f->bandFreqs.assign (m.bandFreqs.begin(),
                                      m.bandFreqs.begin() + f->nBands);
             }
@@ -92,6 +93,9 @@ struct MorphField
             L.y = slots[li].y;
             L.inharmonicity = m.inharmonicity;
             L.name = m.name;
+            L.detune.assign ((size_t) f->nPartials, 1.0f);
+            for (int k = 0; k < std::min (m.nPartials, f->nPartials); ++k)
+                L.detune[(size_t) k] = m.detune[(size_t) k];
             L.logEnv.assign ((size_t) f->nFrames * (size_t) f->nPartials, logEps);
             L.logNoise.assign ((size_t) f->nFrames * (size_t) f->nBands, logEps);
             L.f0Track.assign ((size_t) f->nFrames, 1.0f);

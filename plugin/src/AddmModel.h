@@ -6,7 +6,8 @@
 // Parser for the .addm format written by additive/model.py:
 //   "ADDM" | uint32 version | uint32 headerLen | JSON header |
 //   float32 env[nFrames*nPartials] | float32 f0Track[nFrames] |
-//   float32 noiseEnv[nFrames*nNoiseBands] | float32 bandFreqs[nNoiseBands]
+//   float32 noiseEnv[nFrames*nNoiseBands] | float32 bandFreqs[nNoiseBands] |
+//   float32 detune[nPartials]   (per-partial frequency ratio, ~1.0)
 struct AddmModel
 {
     juce::String name;
@@ -16,6 +17,7 @@ struct AddmModel
     std::vector<float> f0Track;    // ratio to f0Ref
     std::vector<float> noiseEnv;   // row-major (frame, band)
     std::vector<float> bandFreqs;  // Hz
+    std::vector<float> detune;     // per-partial freq ratio vs k*f0
 
     float envAt (int frame, int partial) const noexcept
     {
@@ -37,7 +39,12 @@ struct AddmModel
 
         auto version = (juce::uint32) in.readInt();
         auto headerLen = (juce::uint32) in.readInt();
-        if (version != 1) { error = "unsupported version"; return nullptr; }
+        if (version != 2)
+        {
+            error = "model format v" + juce::String (version)
+                  + " — re-analyze the source (plugin needs v2)";
+            return nullptr;
+        }
 
         juce::MemoryBlock headerBytes;
         in.readIntoMemoryBlock (headerBytes, (int) headerLen);
@@ -64,7 +71,8 @@ struct AddmModel
         if (! readFloats (m->env,       (size_t) m->nFrames * (size_t) m->nPartials)
          || ! readFloats (m->f0Track,   (size_t) m->nFrames)
          || ! readFloats (m->noiseEnv,  (size_t) m->nFrames * (size_t) m->nNoiseBands)
-         || ! readFloats (m->bandFreqs, (size_t) m->nNoiseBands))
+         || ! readFloats (m->bandFreqs, (size_t) m->nNoiseBands)
+         || ! readFloats (m->detune,    (size_t) m->nPartials))
         {
             error = "truncated file";
             return nullptr;

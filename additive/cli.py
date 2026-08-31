@@ -25,7 +25,7 @@ def main() -> None:
     a = sub.add_parser("analyze", help="audio file -> .addm model")
     a.add_argument("input")
     a.add_argument("-o", "--output")
-    a.add_argument("--partials", type=int, default=64)
+    a.add_argument("--partials", type=int, default=None, help="default: adaptive")
     a.add_argument("--f0", type=float, help="skip pitch detection, use this Hz")
     a.add_argument("--fmin", type=float, default=50.0)
     a.add_argument("--fmax", type=float, default=2000.0)

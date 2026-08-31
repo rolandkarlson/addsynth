@@ -50,7 +50,7 @@ def import_file(
     max_len: float = 4.0,
     rng: np.random.Generator | None = None,
     preview: bool = True,
-    n_partials: int = 64,
+    n_partials: int | None = None,
     log=print,
 ) -> list[str]:
     rng = rng or np.random.default_rng()
