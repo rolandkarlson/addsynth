@@ -226,21 +226,15 @@ void AddSynthProcessor::randomizeParams()
 
     // sound parameters, in musical (not full-range) spans
     set ("speed",    std::exp (uni (std::log (0.25f), std::log (2.0f))));
-    set ("blur",     std::pow (rng.nextFloat(), 2.0f) * 0.8f);
     set ("attack",   std::pow (rng.nextFloat(), 2.0f) * 0.6f);
     set ("release",  uni (0.05f, 0.9f));
-    set ("tilt",     uni (-8.0f, 8.0f));
-    set ("oddeven",  uni (-1.0f, 1.0f));
     set ("stretch",  std::pow (rng.nextFloat(), 3.0f) * 0.01f);
-    set ("partials", uni (8.0f, 128.0f));
-    set ("drift",    rng.nextFloat() * 0.7f);
-    set ("pitchenv", uni (0.0f, 1.5f));
+    set ("partials", uni (8.0f, 192.0f));
     set ("noise",    uni (0.2f, 1.5f));
     set ("width",    rng.nextFloat());
     set ("spreadx",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
     set ("spready",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
     set ("spreadn",  (float) rng.nextInt ({ 2, 9 }));
-    set ("bend",     std::pow (rng.nextFloat(), 2.0f) * 0.6f);
     set ("loopstart", rng.nextFloat() * 0.9f);
     set ("looplen",  rng.nextBool() ? 0.0f : uni (0.05f, 0.6f));
     set ("lfo1rate", std::exp (uni (std::log (0.05f), std::log (8.0f))));
@@ -255,7 +249,8 @@ void AddSynthProcessor::randomizeParams()
         set ("mod" + n + "dst", (float) rng.nextInt ({ 0, 12 }));
         set ("mod" + n + "amt", active ? uni (-0.8f, 0.8f) : 0.0f);
     }
-    // gain, morph x/y, scale keys, sync toggles and midiscale left alone
+    // untouched: gain, morph x/y, tilt, odd/even, blur, drift, pitch env,
+    // bend, scale keys, sync toggles, midiscale
 }
 
 std::vector<std::pair<float, float>> AddSynthProcessor::getActiveVoiceCursors() const
