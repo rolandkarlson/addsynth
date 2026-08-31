@@ -533,7 +533,7 @@ void AddSynthEditor::paint (juce::Graphics& g)
     g.setFont (theme::font (13.5f));
     g.drawText ("additive morph synth", 132, 10, 240, 18,
                 juce::Justification::centredLeft);
-    g.drawText ("algorythmid · roland karlson", getWidth() - 260, 10, 244, 18,
+    g.drawText ("algorytmid · roland karlson", getWidth() - 260, 10, 244, 18,
                 juce::Justification::centredRight);
 }
 

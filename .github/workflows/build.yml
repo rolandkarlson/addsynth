@@ -30,7 +30,7 @@ jobs:
           1. Copy the AddSynth.vst3 FOLDER into:
              C:\Program Files\Common Files\VST3\
           2. Rescan plugins in your DAW (Ableton: Options > Preferences >
-             Plug-Ins > Rescan). Find "AddSynth" by Algorythmid.
+             Plug-Ins > Rescan). Find "AddSynth" by Algorytmid.
           AddSynth.exe runs standalone without a DAW (pick your audio/MIDI
           device in its options button).
           Click "add models..." and load .addm model files.

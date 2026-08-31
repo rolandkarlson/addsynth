@@ -17,7 +17,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(AddSynth
-    COMPANY_NAME "Algorythmid"
+    COMPANY_NAME "Algorytmid"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE

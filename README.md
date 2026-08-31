@@ -1,6 +1,6 @@
 # AddSynth — additive resynthesis engine
 
-by Roland Karlson · Algorythmid
+by Roland Karlson · Algorytmid
 
 Sample any sound into an **additive model** (per-partial envelope matrix +
 noise bands), then play, transpose, morph, and mutate it. Two halves:
@@ -55,7 +55,7 @@ cmake --build build --config Release -j8
 
 Builds AU + VST3 + Standalone and copies them to `~/Library/Audio/Plug-Ins/`
 automatically. In Ableton: Settings → Plug-Ins → rescan, then find
-**AddSynth** (Algorythmid).
+**AddSynth** (Algorytmid).
 
 **Morph pad**: *Add models...* (multi-select .addm files, up to 16), drag
 the green nodes to place timbres on the XY field, drag the white circle to
