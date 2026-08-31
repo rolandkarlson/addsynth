@@ -1,4 +1,6 @@
-# synth-ideas — additive resynthesis engine
+# AddSynth — additive resynthesis engine
+
+by Roland Karlson · Algorythmid
 
 Sample any sound into an **additive model** (per-partial envelope matrix +
 noise bands), then play, transpose, morph, and mutate it. Two halves:
@@ -53,7 +55,7 @@ cmake --build build --config Release -j8
 
 Builds AU + VST3 + Standalone and copies them to `~/Library/Audio/Plug-Ins/`
 automatically. In Ableton: Settings → Plug-Ins → rescan, then find
-**AddSynth** (SynthIdeas).
+**AddSynth** (Algorythmid).
 
 **Morph pad**: *Add models...* (multi-select .addm files, up to 16), drag
 the green nodes to place timbres on the XY field, drag the white circle to
@@ -115,7 +117,8 @@ per note (one-shot); note-off applies a fade of `Release` seconds.
 Right-click any audio file in Finder -> Quick Actions -> **Convert to
 AddSynth Model**: runs the tonal-slice importer on it (up to 5 models for
 long files) into `models/`, with previews in `models/previews/`, and posts
-a notification when done. Log: `~/Library/Logs/addsynth-quickaction.log`.
+a notification when done, and auto-commits + pushes the new models to git
+(with [skip ci]). Log: `~/Library/Logs/addsynth-quickaction.log`.
 
 Installed at `~/Library/Services/Convert to AddSynth Model.workflow`
 (a copy lives in `tools/`; to reinstall: `cp -R "tools/Convert to AddSynth
