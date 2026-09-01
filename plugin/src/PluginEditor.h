@@ -133,9 +133,9 @@ private:
     juce::Rectangle<int> modPanelArea;
 
     juce::ToggleButton syncLoopBtn { "loop sync" }, syncSpeedBtn { "speed sync" },
-                       midiScaleBtn { "midi scale" };
+                       midiScaleBtn { "midi scale" }, modalBtn { "modal" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
-        syncLoopA, syncSpeedA, midiScaleA;
+        syncLoopA, syncSpeedA, midiScaleA, modalA;
     juce::TextButton randomButton { "randomize" };
     std::unique_ptr<juce::FileChooser> chooser;
 

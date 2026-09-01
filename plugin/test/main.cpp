@@ -64,6 +64,9 @@ int main (int argc, char** argv)
             else if (key == "width")    params.width = val;
             else if (key == "loopstart") params.loopStart = val;
             else if (key == "looplen")  params.loopLen = val;
+            else if (key == "modal")    params.modal = val > 0.5f;
+            else if (key == "ring")     params.ring = val;
+            else if (key == "damp")     params.damp = val;
             else if (key == "syncloop") params.syncLoop = val > 0.5f;
             else if (key == "syncspeed") params.syncSpeed = val > 0.5f;
             else if (key == "bpm")      params.bpm = val;

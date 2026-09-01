@@ -371,6 +371,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         { "attack", "attack" },   { "release", "release" }, { "pitchenv", "pitch env" },
         { "spreadx", "spread x" },{ "spready", "spread y" },{ "spreadn", "spread n" },
         { "bend", "bend" },       { "width", "width" },
+        { "ring", "ring" },       { "damp", "damp" },
         { "loopstart", "loop pos" },{ "looplen", "loop len" },
     };
     for (auto& [id, title] : knobDefs)
@@ -404,7 +405,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         proc.apvts, "syncloop", syncLoopBtn);
     syncSpeedA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         proc.apvts, "syncspeed", syncSpeedBtn);
-    for (auto* t : { &midiScaleBtn })
+    for (auto* t : { &midiScaleBtn, &modalBtn })
     {
         t->setColour (juce::ToggleButton::textColourId, theme::ink);
         t->setColour (juce::ToggleButton::tickColourId, theme::ink);
@@ -414,6 +415,8 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     }
     midiScaleA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         proc.apvts, "midiscale", midiScaleBtn);
+    modalA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        proc.apvts, "modal", modalBtn);
 
     addAndMakeVisible (randomButton);
     randomButton.onClick = [this] { proc.randomizeParams(); };
@@ -595,12 +598,13 @@ void AddSynthEditor::resized()
     side.removeFromTop (2);
 
     auto toggles = side.removeFromBottom (24);
-    auto tw = toggles.getWidth() / 3;
+    auto tw = toggles.getWidth() / 4;
     syncLoopBtn.setBounds (toggles.removeFromLeft (tw));
     syncSpeedBtn.setBounds (toggles.removeFromLeft (tw));
-    midiScaleBtn.setBounds (toggles);
+    midiScaleBtn.setBounds (toggles.removeFromLeft (tw));
+    modalBtn.setBounds (toggles);
 
-    const int cols = 4, rows = 5;
+    const int cols = 4, rows = 6;
     auto cellW = side.getWidth() / cols;
     auto cellH = side.getHeight() / rows;
     for (size_t i = 0; i < knobs.size(); ++i)

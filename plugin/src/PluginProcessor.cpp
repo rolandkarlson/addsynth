@@ -62,6 +62,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f, 0.4f), 0.05f));
     layout.add (std::make_unique<P> ("width", "Width",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "modal", "Modal", false));
+    layout.add (std::make_unique<P> ("ring", "Ring",
+        juce::NormalisableRange<float> (0.0f, 8.0f, 0.001f, 0.3f), 0.0f));
+    layout.add (std::make_unique<P> ("damp", "Damp",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.4f));
     layout.add (std::make_unique<P> ("loopstart", "Loop Start",
         juce::NormalisableRange<float> (0.0f, 0.95f, 0.001f), 0.4f));
     layout.add (std::make_unique<P> ("looplen", "Loop Len",
@@ -140,6 +146,9 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.spreadN = (int) get ("spreadn");
     p.bend = get ("bend");
     p.width = get ("width");
+    p.modal = get ("modal") > 0.5f;
+    p.ring = get ("ring");
+    p.damp = get ("damp");
     p.loopStart = get ("loopstart");
     p.loopLen = get ("looplen");
     p.syncLoop = get ("syncloop") > 0.5f;
@@ -235,6 +244,8 @@ void AddSynthProcessor::randomizeParams()
     set ("spreadx",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
     set ("spready",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
     set ("spreadn",  (float) rng.nextInt ({ 2, 9 }));
+    set ("ring",     rng.nextBool() ? 0.0f : uni (0.3f, 4.0f));
+    set ("damp",     rng.nextFloat());
     set ("loopstart", rng.nextFloat() * 0.9f);
     set ("looplen",  rng.nextBool() ? 0.0f : uni (0.05f, 0.6f));
     set ("lfo1rate", std::exp (uni (std::log (0.05f), std::log (8.0f))));

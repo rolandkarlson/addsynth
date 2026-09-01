@@ -94,6 +94,12 @@ Ableton. Pad layout is saved with the session.
   odd/even, partials, pitch, loop pos. Everything is applied at control
   rate through the smoothed additive engine — partials above Nyquist stay
   muted, so modulation can't alias.
+- **modal** checkbox + *Ring* / *Damp* — resonator mode using the same
+  oscillator bank: the model's envelope excites per-partial amplitudes
+  that ring down exponentially (Ring = base decay seconds), with higher
+  partials damped faster (Damp; 0 = metallic, 1 = woody). Multi-hit
+  models become struck instruments; the voice holds at the envelope end
+  so the ring decays naturally, release still applies after note-off.
 - *loop sync* checkbox — Loop Len picks musical lengths (1/4..16 beats) at
   the host tempo, compensated for Speed so the audible loop stays on grid.
 - *speed sync* checkbox — Speed means "scan the whole envelope in N bars"

@@ -42,6 +42,9 @@ public:
         bool  midiScale = false;   // keyMask mirrors currently held notes
         float bend = 0.05f;        // glide time (s) between quantized notes
         float width = 0.0f;        // stereo: per-partial pan + L/R micro-detune
+        bool  modal = false;       // enable the modal/resonator mode
+        float ring = 0.0f;         // resonator decay time (s), 0 = off
+        float damp = 0.4f;         // high partials decay faster (0..1)
         float loopStart = 0.4f;    // sustain loop start, 0..1 of the envelope
         float loopLen = 0.0f;      // loop length, 0..1; 0 = looping off
         bool  syncLoop = false;    // loopLen picks beats (1/4..16) at host bpm
@@ -115,7 +118,7 @@ public:
         for (int k = 0; k < nP; ++k)
         {
             zL[k] = zR[k] = { 1.0f, 0.0f };
-            amp0[k] = amp1[k] = lag[k] = 0.0f;
+            amp0[k] = amp1[k] = lag[k] = ringAmp[k] = 0.0f;
             log2k[k] = std::log2 ((float) (k + 1));
             driftPhase[k] = rng.nextFloat() * juce::MathConstants<float>::twoPi;
             // each partial shimmers at its own slow rate, 0.1..1.6 Hz
@@ -128,7 +131,7 @@ public:
             detSign[k] = ((h >> 22) & 1) ? 1.0f : -1.0f;
         }
         for (int b = 0; b < nB; ++b)
-            ng0[b] = ng1[b] = nlag[b] = 0.0f;
+            ng0[b] = ng1[b] = nlag[b] = ringNoise[b] = 0.0f;
 
         currentFrame = -1;
         ctrlCountdown = 0;
@@ -210,7 +213,17 @@ public:
         for (int i = 0; i < num; ++i)
         {
             int frame = (int) framePos;
-            if (frame >= field->nFrames - 1) { clearCurrentNote(); return; }
+            if (frame >= field->nFrames - 1)
+            {
+                if (params.modal && params.ring > 0.005f)
+                {
+                    // modal mode: hold at the envelope end and let the
+                    // ring energy decay; release still ends the voice
+                    framePos = (double) (field->nFrames - 1) - 1e-3;
+                    frame = (int) framePos;
+                }
+                else { clearCurrentNote(); return; }
+            }
             // refresh at control rate even when frozen (speed = 0), so
             // morph, blur, drift and timbre knobs keep working
             if (frame != currentFrame || --ctrlCountdown <= 0)
@@ -454,7 +467,18 @@ private:
             tgt *= g;
 
             lag[k] += (tgt - lag[k]) * blurAlpha;  // Blur
-            amp1[k] = lag[k];
+            float a1 = lag[k];
+            if (params.modal && params.ring > 0.005f)
+            {
+                // resonator: the envelope excites, partials ring down at
+                // their own rate — higher ones damped faster (physical)
+                float Tk = params.ring * std::pow (kk, -1.5f * params.damp);
+                float df = std::exp (-1.0f / juce::jmax (1e-4f, Tk)
+                                     / fld.controlRate);
+                ringAmp[k] = juce::jmax (a1, ringAmp[k] * df);
+                a1 = ringAmp[k];
+            }
+            amp1[k] = a1;
 
             float pan = widthPan * panSign[k]
                       * juce::jmin (1.0f, kk / 6.0f);      // lows centered
@@ -480,7 +504,17 @@ private:
                 acc += wts[li] * fld.logNoiseAt (fld.layers[li], f1, b);
             float tgt = juce::jmax (0.0f, std::exp (acc) - MorphField::EPS);
             nlag[b] += (tgt - nlag[b]) * blurAlpha;
-            ng1[b] = nlag[b];
+            float n1 = nlag[b];
+            if (params.modal && params.ring > 0.005f)
+            {
+                float Tb = params.ring * std::pow ((float) (b + 1),
+                                                   -1.5f * params.damp);
+                float df = std::exp (-1.0f / juce::jmax (1e-4f, Tb)
+                                     / fld.controlRate);
+                ringNoise[b] = juce::jmax (n1, ringNoise[b] * df);
+                n1 = ringNoise[b];
+            }
+            ng1[b] = n1;
 
             float pan = 0.7f * params.width * ((b & 1) ? 1.0f : -1.0f);
             ngL[b] = std::sqrt (1.0f - pan);
@@ -509,10 +543,12 @@ private:
     std::complex<float> zL[maxPartials], wL[maxPartials];
     std::complex<float> zR[maxPartials], wR[maxPartials];
     float amp0[maxPartials] {}, amp1[maxPartials] {}, lag[maxPartials] {};
+    float ringAmp[maxPartials] {};
     float gL[maxPartials] {}, gR[maxPartials] {};
     float panSign[maxPartials] {}, detSign[maxPartials] {};
     float log2k[maxPartials] {}, driftPhase[maxPartials] {}, driftInc[maxPartials] {};
     float ng0[maxBands] {}, ng1[maxBands] {}, nlag[maxBands] {};
+    float ringNoise[maxBands] {};
     float ngL[maxBands] {}, ngR[maxBands] {};
     juce::dsp::IIR::Filter<float> bandFilter[maxBands];
     juce::Random rng;
