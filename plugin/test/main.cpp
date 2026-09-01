@@ -67,6 +67,8 @@ int main (int argc, char** argv)
             else if (key == "modal")    params.modal = val > 0.5f;
             else if (key == "ring")     params.ring = val;
             else if (key == "damp")     params.damp = val;
+            else if (key == "sustain")  params.sustain = val;
+            else if (key == "decay")    params.decay = val;
             else if (key == "syncloop") params.syncLoop = val > 0.5f;
             else if (key == "syncspeed") params.syncSpeed = val > 0.5f;
             else if (key == "bpm")      params.bpm = val;

@@ -66,6 +66,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         "modal", "Modal", false));
     layout.add (std::make_unique<P> ("ring", "Ring",
         juce::NormalisableRange<float> (0.0f, 8.0f, 0.001f, 0.3f), 0.0f));
+    layout.add (std::make_unique<P> ("decay", "Decay",
+        juce::NormalisableRange<float> (0.0f, 8.0f, 0.001f, 0.3f), 0.0f));
+    layout.add (std::make_unique<P> ("sustain", "Sustain",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
     layout.add (std::make_unique<P> ("damp", "Damp",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.4f));
     layout.add (std::make_unique<P> ("loopstart", "Loop Start",
@@ -149,6 +153,8 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.modal = get ("modal") > 0.5f;
     p.ring = get ("ring");
     p.damp = get ("damp");
+    p.sustain = get ("sustain");
+    p.decay = get ("decay");
     p.loopStart = get ("loopstart");
     p.loopLen = get ("looplen");
     p.syncLoop = get ("syncloop") > 0.5f;
@@ -246,6 +252,8 @@ void AddSynthProcessor::randomizeParams()
     set ("spreadn",  (float) rng.nextInt ({ 2, 9 }));
     set ("ring",     rng.nextBool() ? 0.0f : uni (0.3f, 4.0f));
     set ("damp",     rng.nextFloat());
+    set ("decay",    rng.nextBool() ? 0.0f : uni (0.05f, 2.0f));
+    set ("sustain",  rng.nextBool() ? 1.0f : rng.nextFloat());
     set ("loopstart", rng.nextFloat() * 0.9f);
     set ("looplen",  rng.nextBool() ? 0.0f : uni (0.05f, 0.6f));
     set ("lfo1rate", std::exp (uni (std::log (0.05f), std::log (8.0f))));

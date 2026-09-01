@@ -45,6 +45,8 @@ public:
         bool  modal = false;       // enable the modal/resonator mode
         float ring = 0.0f;         // resonator decay time (s), 0 = off
         float damp = 0.4f;         // high partials decay faster (0..1)
+        float decay = 0.0f;        // ADSR decay to sustain (s), 0 = no decay stage
+        float sustain = 1.0f;      // ADSR sustain level of the model/exciter
         float loopStart = 0.4f;    // sustain loop start, 0..1 of the envelope
         float loopLen = 0.0f;      // loop length, 0..1; 0 = looping off
         bool  syncLoop = false;    // loopLen picks beats (1/4..16) at host bpm
@@ -105,6 +107,8 @@ public:
         loopArmed = false;
         releaseGain = 1.0f;
         attackGain = 0.0f;
+        decayLevel = 1.0f;
+        ringMax = 0.0f;
         attackStep = 1.0f / (juce::jmax (0.001f, params.attack) * (float) sr);
         voiceIndex = noteCounter != nullptr
             ? noteCounter->fetch_add (1) % juce::jmax (1, params.spreadN)
@@ -189,6 +193,9 @@ public:
         if (float sm = modFor (4); sm != 0.0f)
             effSpeed *= std::exp2 ((double) sm);
         double frameInc = frameIncBase * effSpeed;
+        const bool modalOn = params.modal && params.ring > 0.005f;
+        const float decayCoef = params.decay > 0.001f
+            ? 1.0f - std::exp (-1.0f / (params.decay * (float) sr)) : 1.0f;
 
         // loop length in frames: musical beats at host tempo (compensated
         // by speed so the audible period stays on the grid), or a fraction
@@ -252,20 +259,32 @@ public:
                 }
             }
 
-            float env = vel;
+            // ADSR: attack -> decay to sustain -> release. It shapes the
+            // MODEL (the exciter). In modal mode the ring is excited by
+            // model x ADSR and then lives on its own: a short ADSR is a
+            // short strike, and the body still rings out.
             if (attackGain < 1.0f)
             {
                 attackGain += attackStep;
                 if (attackGain > 1.0f) attackGain = 1.0f;
-                env *= attackGain;
             }
+            else if (params.decay > 0.001f)
+                decayLevel += (params.sustain - decayLevel) * decayCoef;
+            else
+                decayLevel = 1.0f;
             if (releasing)
             {
                 releaseGain -= releaseStep;
-                if (releaseGain <= 0.0f) { clearCurrentNote(); return; }
-                env *= releaseGain;
+                if (releaseGain <= 0.0f)
+                {
+                    releaseGain = 0.0f;
+                    if (! modalOn) { clearCurrentNote(); return; }
+                    if (ringMax < 1e-5f) { clearCurrentNote(); return; }
+                }
             }
+            adsr = attackGain * decayLevel * releaseGain;
 
+            float env = modalOn ? vel : vel * adsr;
             l[i] += sL * env;
             if (r != nullptr) r[i] += sR * env;
             framePos += frameInc;
@@ -428,6 +447,7 @@ private:
         const float widthPan = 0.85f * widthEff;
         const float widthDet = 2.0f * widthEff * 5.7735e-4f; // ~2 cents
 
+        float frameRingMax = 0.0f;
         auto nyq = 0.98f * (float) sr * 0.5f;
         for (int k = 0; k < nP; ++k)
         {
@@ -475,8 +495,9 @@ private:
                 float Tk = params.ring * std::pow (kk, -1.5f * params.damp);
                 float df = std::exp (-1.0f / juce::jmax (1e-4f, Tk)
                                      / fld.controlRate);
-                ringAmp[k] = juce::jmax (a1, ringAmp[k] * df);
+                ringAmp[k] = juce::jmax (a1 * adsr, ringAmp[k] * df);
                 a1 = ringAmp[k];
+                frameRingMax = juce::jmax (frameRingMax, a1);
             }
             amp1[k] = a1;
 
@@ -511,8 +532,9 @@ private:
                                                    -1.5f * params.damp);
                 float df = std::exp (-1.0f / juce::jmax (1e-4f, Tb)
                                      / fld.controlRate);
-                ringNoise[b] = juce::jmax (n1, ringNoise[b] * df);
+                ringNoise[b] = juce::jmax (n1 * adsr, ringNoise[b] * df);
                 n1 = ringNoise[b];
+                frameRingMax = juce::jmax (frameRingMax, n1);
             }
             ng1[b] = n1;
 
@@ -520,6 +542,7 @@ private:
             ngL[b] = std::sqrt (1.0f - pan);
             ngR[b] = std::sqrt (1.0f + pan);
         }
+        ringMax = frameRingMax;
     }
 
     std::shared_ptr<const MorphField> pendingField, field;
@@ -537,6 +560,7 @@ private:
     bool releasing = false, loopArmed = false;
     float releaseGain = 1.0f, releaseStep = 0.001f;
     float attackGain = 1.0f, attackStep = 1.0f;
+    float decayLevel = 1.0f, adsr = 1.0f, ringMax = 0.0f;
     float effNoise = 1.0f;
     float cursorX = 0.5f, cursorY = 0.5f, cursorCoef = 0.1f;
 

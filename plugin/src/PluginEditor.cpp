@@ -371,6 +371,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
         { "attack", "attack" },   { "release", "release" }, { "pitchenv", "pitch env" },
         { "spreadx", "spread x" },{ "spready", "spread y" },{ "spreadn", "spread n" },
         { "bend", "bend" },       { "width", "width" },
+        { "decay", "decay" },     { "sustain", "sustain" },
         { "ring", "ring" },       { "damp", "damp" },
         { "loopstart", "loop pos" },{ "looplen", "loop len" },
     };
