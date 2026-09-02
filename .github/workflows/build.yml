@@ -3,7 +3,11 @@ name: build plugins
 on:
   push:
     branches: [main]
+    tags: ['*']
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -41,6 +45,16 @@ jobs:
           name: AddSynth-Windows
           path: dist/
 
+      - name: zip
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath AddSynth-Windows.zip
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: AddSynth-Windows.zip
+
   macos:
     runs-on: macos-latest
     steps:
@@ -64,3 +78,12 @@ jobs:
         with:
           name: AddSynth-macOS
           path: dist/
+
+      - name: zip
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ditto -c -k --keepParent dist AddSynth-macOS.zip
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: AddSynth-macOS.zip
