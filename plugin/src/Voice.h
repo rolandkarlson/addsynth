@@ -117,12 +117,25 @@ public:
         cursorY = wrap01 (params.cursorY + (float) voiceIndex * params.spreadY);
         cursorCoef = 1.0f - std::exp (-1.0f / (0.03f * field->controlRate));
 
+        const bool takeover = stolen;   // continuity from the stolen note
+        stolen = false;
+        const int oldP = nP;
         nP = juce::jmin (field->nPartials, maxPartials);
         nB = juce::jmin (field->nBands, maxBands);
         for (int k = 0; k < nP; ++k)
         {
-            zL[k] = zR[k] = { 1.0f, 0.0f };
-            amp0[k] = amp1[k] = lag[k] = ringAmp[k] = 0.0f;
+            if (takeover && k < oldP)
+            {
+                // phase continues; the ramp starts from what is sounding now
+                amp0[k] = amp0[k] + (amp1[k] - amp0[k]) * rampPhase;
+                amp1[k] = amp0[k];
+                lag[k] = ringAmp[k] = 0.0f;
+            }
+            else
+            {
+                zL[k] = zR[k] = { 1.0f, 0.0f };
+                amp0[k] = amp1[k] = lag[k] = ringAmp[k] = 0.0f;
+            }
             log2k[k] = std::log2 ((float) (k + 1));
             driftPhase[k] = rng.nextFloat() * juce::MathConstants<float>::twoPi;
             // each partial shimmers at its own slow rate, 0.1..1.6 Hz
@@ -135,12 +148,26 @@ public:
             detSign[k] = ((h >> 22) & 1) ? 1.0f : -1.0f;
         }
         for (int b = 0; b < nB; ++b)
-            ng0[b] = ng1[b] = nlag[b] = ringNoise[b] = 0.0f;
+        {
+            if (takeover)
+            {
+                ng0[b] = ng0[b] + (ng1[b] - ng0[b]) * rampPhase;
+                ng1[b] = ng0[b];
+                nlag[b] = ringNoise[b] = 0.0f;
+            }
+            else
+                ng0[b] = ng1[b] = nlag[b] = ringNoise[b] = 0.0f;
+        }
 
         currentFrame = -1;
         ctrlCountdown = 0;
+        // keep the takeover start values: updateControlFrame moves the
+        // ramp start to the current value (rampPhase = 1 -> exactly amp1)
+        rampPhase = 1.0f;
         updateControlFrame (0);
-        if (params.attack <= 0.0005f)
+        if (takeover)
+            attackGain = 1.0f;          // no fade from zero over a live tone
+        else if (params.attack <= 0.0005f)
         {
             // instant attack: start directly on the model's first frame
             attackGain = 1.0f;
@@ -166,7 +193,13 @@ public:
             releaseStep = 1.0f / (juce::jmax (0.005f, params.release) * (float) sr);
         }
         else
+        {
+            // hard stop = we are being stolen for a new note. Keep the
+            // oscillator/amplitude state so startNote can take over
+            // continuously instead of cutting the waveform (click).
+            stolen = isVoiceActive();
             clearCurrentNote();
+        }
     }
 
     void pitchWheelMoved (int) override {}
@@ -193,6 +226,7 @@ public:
         if (float sm = modFor (4); sm != 0.0f)
             effSpeed *= std::exp2 ((double) sm);
         double frameInc = frameIncBase * effSpeed;
+        curFrameInc = frameInc;
         const bool modalOn = params.modal && params.ring > 0.005f;
         const float decayCoef = params.decay > 0.001f
             ? 1.0f - std::exp (-1.0f / (params.decay * (float) sr)) : 1.0f;
@@ -229,13 +263,28 @@ public:
                     framePos = (double) (field->nFrames - 1) - 1e-3;
                     frame = (int) framePos;
                 }
-                else { clearCurrentNote(); return; }
+                else
+                {
+                    // hold the last frame and fade out over 5 ms instead of
+                    // cutting the waveform (models rarely end at exact zero)
+                    framePos = (double) (field->nFrames - 1) - 1e-3;
+                    frame = (int) framePos;
+                    if (! releasing || releaseStep < 1.0f / (0.005f * (float) sr))
+                    {
+                        releasing = true;
+                        releaseStep = 1.0f / (0.005f * (float) sr);
+                    }
+                }
             }
             // refresh at control rate even when frozen (speed = 0), so
             // morph, blur, drift and timbre knobs keep working
             if (frame != currentFrame || --ctrlCountdown <= 0)
                 updateControlFrame (frame);
-            float frac = (float) (framePos - frame);
+            // amplitude ramps run across one refresh interval, independent
+            // of playback speed (at low speed a frame spans many refreshes;
+            // tying the ramp to the frame fraction caused jumps = clicks)
+            float frac = rampPhase;
+            rampPhase = juce::jmin (1.0f, rampPhase + rampInc);
 
             float sL = 0.0f, sR = 0.0f;
             for (int k = 0; k < nP; ++k)
@@ -372,7 +421,19 @@ private:
         currentFrame = frame;
         ctrlCountdown = juce::jmax (8, (int) (sr / field->controlRate));
         auto& fld = *field;
-        int f1 = juce::jmin (frame + 1, fld.nFrames - 1);
+        // where the envelope will be at the NEXT refresh: interpolate
+        // between the two surrounding frames so slow speeds glide
+        // smoothly instead of stepping
+        double look = juce::jlimit (0.0, (double) (fld.nFrames - 1),
+                                    framePos + curFrameInc * ctrlCountdown);
+        int i0 = (int) look;
+        int i1 = juce::jmin (i0 + 1, fld.nFrames - 1);
+        float fr = (float) (look - i0);
+        // the new ramp starts from the value currently sounding
+        float startPhase = rampPhase;
+        rampPhase = 0.0f;
+        rampInc = 1.0f / (float) ctrlCountdown;
+        juce::ignoreUnused (frame);
         auto nLayers = fld.layers.size();
 
         // this voice's own pad position: global cursor + wrapped spread offset
@@ -388,7 +449,8 @@ private:
         float ratio = 0.0f, B = 0.0f;
         for (size_t li = 0; li < nLayers; ++li)
         {
-            ratio += wts[li] * fld.layers[li].f0Track[(size_t) f1];
+            ratio += wts[li] * (fld.layers[li].f0Track[(size_t) i0] * (1.0f - fr)
+                                + fld.layers[li].f0Track[(size_t) i1] * fr);
             B += wts[li] * fld.layers[li].inharmonicity;
         }
         if (ratio <= 0.0f) ratio = 1.0f;
@@ -451,7 +513,7 @@ private:
         auto nyq = 0.98f * (float) sr * 0.5f;
         for (int k = 0; k < nP; ++k)
         {
-            amp0[k] = amp1[k];
+            amp0[k] = amp0[k] + (amp1[k] - amp0[k]) * startPhase;
 
             float kk = (float) (k + 1);
             float pdet = 0.0f;
@@ -468,7 +530,8 @@ private:
 
             float acc = 0.0f;
             for (size_t li = 0; li < nLayers; ++li)
-                acc += wts[li] * fld.logEnvAt (fld.layers[li], f1, k);
+                acc += wts[li] * (fld.logEnvAt (fld.layers[li], i0, k) * (1.0f - fr)
+                                  + fld.logEnvAt (fld.layers[li], i1, k) * fr);
             float tgt = std::exp (acc) - MorphField::EPS;
             if (tgt < 0.0f) tgt = 0.0f;
 
@@ -519,10 +582,11 @@ private:
 
         for (int b = 0; b < nB; ++b)
         {
-            ng0[b] = ng1[b];
+            ng0[b] = ng0[b] + (ng1[b] - ng0[b]) * startPhase;
             float acc = 0.0f;
             for (size_t li = 0; li < nLayers; ++li)
-                acc += wts[li] * fld.logNoiseAt (fld.layers[li], f1, b);
+                acc += wts[li] * (fld.logNoiseAt (fld.layers[li], i0, b) * (1.0f - fr)
+                                  + fld.logNoiseAt (fld.layers[li], i1, b) * fr);
             float tgt = juce::jmax (0.0f, std::exp (acc) - MorphField::EPS);
             nlag[b] += (tgt - nlag[b]) * blurAlpha;
             float n1 = nlag[b];
@@ -557,7 +621,9 @@ private:
     double sr = 44100.0, framePos = 0.0, frameIncBase = 0.0;
     float f0 = 440.0f, vel = 1.0f;
     int nP = 0, nB = 0, currentFrame = -1, ctrlCountdown = 0;
-    bool releasing = false, loopArmed = false;
+    float rampPhase = 0.0f, rampInc = 1.0f;
+    double curFrameInc = 0.0;
+    bool releasing = false, loopArmed = false, stolen = false;
     float releaseGain = 1.0f, releaseStep = 0.001f;
     float attackGain = 1.0f, attackStep = 1.0f;
     float decayLevel = 1.0f, adsr = 1.0f, ringMax = 0.0f;

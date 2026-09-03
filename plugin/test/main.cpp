@@ -34,6 +34,7 @@ int main (int argc, char** argv)
     std::vector<std::shared_ptr<const AddmModel>> models;
     AddVoice::Params params;
     bool chord = false;
+    int poly = 0;   // >0: N staggered held notes (voice-stealing stress)
     double lfo1Hz = 0.0, lfo2Hz = 0.0;
     for (int i = 1; i < argc; ++i)
     {
@@ -57,6 +58,7 @@ int main (int argc, char** argv)
             }
             auto val = valStr.getFloatValue();
             if      (key == "chord")    chord = val > 0.5f;
+            else if (key == "poly")     poly = (int) val;
             else if (key == "lfo1")     lfo1Hz = val;
             else if (key == "lfo2")     lfo2Hz = val;
             else if (key == "keys")     params.keyMask = (juce::uint16) val;
@@ -123,7 +125,16 @@ int main (int argc, char** argv)
     struct Ev { double t; int note; bool on; };
     std::vector<Ev> evs;
     int notes = 1;
-    if (chord)
+    if (poly > 0)
+    {
+        // more notes than voices -> stealing; all held until t=4.0
+        for (int k = 0; k < poly; ++k)
+        {
+            evs.push_back ({ 0.2 + k * 0.15, 48 + (k * 5) % 24, true });
+            evs.push_back ({ 4.0, 48 + (k * 5) % 24, false });
+        }
+    }
+    else if (chord)
     {
         // staggered chord so successive voices pick up spread offsets
         const int chordNotes[] = { 48, 55, 60, 64, 67 };
@@ -160,7 +171,7 @@ int main (int argc, char** argv)
                                    * lfo2Hz * tBlockStart);
         // sequential-notes mode steps the cursor left->right per note
         int noteIdx = (int) (tBlockStart / 2.5);
-        p.cursorX = (chord || notes == 1) ? 0.5f
+        p.cursorX = (chord || poly > 0 || notes == 1) ? 0.5f
                   : (float) juce::jmin (noteIdx, notes - 1) / (float) (notes - 1);
         p.cursorY = 0.5f;
         for (auto* v : voices)
