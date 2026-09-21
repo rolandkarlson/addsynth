@@ -64,6 +64,15 @@ play. Double-click a node to remove it. Cursor position = automatable
 `Morph X` / `Morph Y` parameters, so you can automate timbre sweeps from
 Ableton. Pad layout is saved with the session.
 
+**Partial levels**: draw across the bars to attenuate individual partials
+for every model on the pad. Full height = unchanged (100%), bottom = mute;
+the curve multiplies the models' evolving amplitudes and also shapes held
+notes and modal tails. Fast strokes fill in every crossed bar. Use the range
+menu to zoom into groups of 64, double-click a bar to restore it, or use
+*reset all* to restore all 192 levels. The curve is saved with the session,
+each partial level is automatable, and the noise layer has its own *Noise*
+control.
+
 **Knobs** (all automatable):
 - *Gain*, *Noise* (noise-layer level), *Attack*, *Release*
 - *Speed* — envelope playback rate; 0 freezes the spectrum (drone), 8x chirps
@@ -115,7 +124,7 @@ Ableton. Pad layout is saved with the session.
   *Pitch Env* to exaggerate the track and the quantizer turns wobbly slices
   into melodies/arpeggios in key.
 
-Voice engine: 8 voices × 64 phasor-rotation sine oscillators (drift-corrected
+Voice engine: 8 voices × up to 192 phasor-rotation sine oscillators (drift-corrected
 complex multiply — no per-sample `sin()` calls) + 24 constant-Q bandpass
 noise filters. All pad models are pre-resampled onto one common control grid
 (precomputed log envelopes) whenever the pad changes, so per-control-frame

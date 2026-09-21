@@ -62,6 +62,11 @@ public:
     }
     int getHeldMask() const { return heldMaskDisplay.load(); }
 
+    static juce::String partialGainID (int index)
+    {
+        return "partialGain" + juce::String (index + 1);
+    }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -69,6 +74,7 @@ private:
     void rebuildField();
 
     juce::Synthesiser synth;
+    std::array<std::atomic<float>*, AddVoice::maxPartials> partialGainValues {};
     std::atomic<int> noteCounter { 0 };
     double lfoPhase1 = 0.0, lfoPhase2 = 0.25;
 

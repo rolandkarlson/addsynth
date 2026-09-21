@@ -2,6 +2,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include <complex>
+#include <array>
 #include "MorphField.h"
 
 struct AddSound : public juce::SynthesiserSound
@@ -33,6 +34,13 @@ public:
         float oddEven = 0.0f;      // -1 evens only .. +1 odds only
         float stretchB = 0.0f;     // extra inharmonicity
         float partials = 192.0f;   // number of audible partials
+        // Shared attenuation curve, indexed by partial number across all models.
+        std::array<float, maxPartials> partialGains = []
+        {
+            std::array<float, maxPartials> gains;
+            gains.fill (1.0f);
+            return gains;
+        }();
         float drift = 0.0f;        // per-partial shimmer depth 0..1
         float pitchEnvAmt = 1.0f;  // scale of the analyzed pitch track
         float cursorX = 0.5f, cursorY = 0.5f;
@@ -523,7 +531,7 @@ private:
             if (freq >= nyq)
             {
                 lag[k] += (0.0f - lag[k]) * blurAlpha;
-                amp1[k] = lag[k];
+                amp1[k] = lag[k] * params.partialGains[(size_t) k];
                 wL[k] = wR[k] = { 1.0f, 0.0f };
                 continue;
             }
@@ -562,7 +570,9 @@ private:
                 a1 = ringAmp[k];
                 frameRingMax = juce::jmax (frameRingMax, a1);
             }
-            amp1[k] = a1;
+            // Apply after blur/resonance so editing also shapes held notes and
+            // existing modal tails. The amplitude ramp smooths live changes.
+            amp1[k] = a1 * params.partialGains[(size_t) k];
 
             float pan = widthPan * panSign[k]
                       * juce::jmin (1.0f, kk / 6.0f);      // lows centered

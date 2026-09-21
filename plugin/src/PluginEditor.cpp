@@ -343,15 +343,239 @@ void ScaleKeyboard::mouseDown (const juce::MouseEvent& e)
     repaint();
 }
 
+// ======================================================== PartialEditor
+
+PartialEditor::PartialEditor (AddSynthProcessor& p)
+{
+    for (int k = 0; k < AddVoice::maxPartials; ++k)
+        gains[(size_t) k] = p.apvts.getParameter (AddSynthProcessor::partialGainID (k));
+
+    range.addItem ("all 192", 1);
+    range.addItem ("partials 1-64", 2);
+    range.addItem ("partials 65-128", 3);
+    range.addItem ("partials 129-192", 4);
+    range.setSelectedId (1, juce::dontSendNotification);
+    range.setTooltip ("Zoom in to draw individual partials more precisely");
+    range.onChange = [this]
+    {
+        finishGesture();
+        const int selection = range.getSelectedId();
+        visiblePartials = selection == 1 ? AddVoice::maxPartials : 64;
+        firstPartial = selection == 1 ? 0 : (selection - 2) * 64;
+        hoverPartial = -1;
+        repaint();
+    };
+    addAndMakeVisible (range);
+
+    reset.setTooltip ("Restore all 192 partial levels to 100%");
+    reset.onClick = [this]
+    {
+        finishGesture();
+        for (int k = 0; k < AddVoice::maxPartials; ++k)
+            setGain (k, 1.0f);
+        finishGesture();
+        repaint();
+    };
+    addAndMakeVisible (reset);
+    setTitle ("Partial levels");
+    setDescription ("Draw amplitude multipliers shared by all models, from mute to 100 percent");
+    startTimerHz (30);
+}
+
+PartialEditor::~PartialEditor()
+{
+    finishGesture();
+}
+
+juce::Rectangle<float> PartialEditor::plotBounds() const
+{
+    return getLocalBounds().toFloat().reduced (12.0f, 8.0f)
+        .withTrimmedTop (28.0f).withTrimmedBottom (18.0f).withTrimmedLeft (34.0f);
+}
+
+int PartialEditor::partialAt (float x) const
+{
+    auto plot = plotBounds();
+    return firstPartial + juce::jlimit (0, visiblePartials - 1,
+        (int) std::floor ((x - plot.getX()) / plot.getWidth() * (float) visiblePartials));
+}
+
+float PartialEditor::gainAt (float y) const
+{
+    auto plot = plotBounds();
+    return juce::jlimit (0.0f, 1.0f, (plot.getBottom() - y) / plot.getHeight());
+}
+
+void PartialEditor::setGain (int index, float gain)
+{
+    auto i = (size_t) index;
+    auto& parameter = *gains[i];
+    if (std::abs (parameter.getValue() - gain) < 0.0005f)
+        return;
+    if (! gestures[i])
+    {
+        parameter.beginChangeGesture();
+        gestures[i] = true;
+    }
+    parameter.setValueNotifyingHost (gain);
+}
+
+void PartialEditor::finishGesture()
+{
+    for (size_t k = 0; k < gestures.size(); ++k)
+        if (gestures[k])
+        {
+            gains[k]->endChangeGesture();
+            gestures[k] = false;
+        }
+    drawing = false;
+    previousPartial = -1;
+}
+
+void PartialEditor::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour (theme::panel);
+    g.fillRoundedRectangle (bounds, 10.0f);
+    g.setColour (theme::ink.withAlpha (0.15f));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 10.0f, 1.0f);
+
+    g.setColour (theme::ink);
+    g.setFont (theme::font (14.0f, true));
+    g.drawText ("partial levels", 12, 8, 100, 20, juce::Justification::centredLeft);
+    g.setFont (theme::font (12.0f));
+    g.setColour (theme::ink.withAlpha (0.65f));
+    juce::String detail = "all models / drag to draw / double-click a bar to reset";
+    if (hoverPartial >= 0)
+    {
+        const float gain = gains[(size_t) hoverPartial]->getValue();
+        detail = "partial " + juce::String (hoverPartial + 1) + "  /  "
+               + juce::String (juce::roundToInt (gain * 100.0f)) + "%  /  "
+               + (gain <= 0.0f ? juce::String ("muted")
+                              : juce::String (20.0f * std::log10 (gain), 1) + " dB");
+    }
+    g.drawText (detail, 120, 8, range.getX() - 132, 20,
+                juce::Justification::centredLeft);
+
+    auto plot = plotBounds();
+    g.setColour (theme::padBg);
+    g.fillRect (plot);
+    g.setFont (theme::font (10.5f));
+    for (int step = 0; step <= 2; ++step)
+    {
+        float y = plot.getY() + plot.getHeight() * (float) step / 2.0f;
+        g.setColour (theme::ink.withAlpha (0.12f));
+        g.drawHorizontalLine (juce::roundToInt (y), plot.getX(), plot.getRight());
+        g.setColour (theme::ink.withAlpha (0.6f));
+        g.drawText (juce::String (100 - step * 50) + "%",
+                    8, juce::roundToInt (y) - 7, 32, 14,
+                    juce::Justification::centredRight);
+    }
+
+    const float width = plot.getWidth() / (float) visiblePartials;
+    for (int i = 0; i < visiblePartials; ++i)
+    {
+        const int k = firstPartial + i;
+        const float gain = gains[(size_t) k]->getValue();
+        const float height = juce::jmax (1.5f, gain * plot.getHeight());
+        const float x = plot.getX() + (float) i * width;
+        const bool hovered = k == hoverPartial;
+        g.setColour (hovered ? theme::ink : theme::accent.withAlpha (0.85f));
+        g.fillRect (x + 0.5f, plot.getBottom() - height, width - 1.0f, height);
+        g.setColour (hovered ? theme::pill : theme::ink.withAlpha (0.55f));
+        g.fillRect (x + 0.5f, plot.getBottom() - height, width - 1.0f, 1.5f);
+
+        const int number = k + 1;
+        const int tickStep = visiblePartials == AddVoice::maxPartials ? 16 : 8;
+        if (i == 0 || number % tickStep == 0)
+        {
+            const float labelX = juce::jlimit (plot.getX(), plot.getRight() - 28.0f,
+                                               x + width * 0.5f - 14.0f);
+            g.setColour (theme::ink.withAlpha (0.65f));
+            g.drawText (juce::String (number), (int) labelX,
+                        (int) plot.getBottom() + 3, 28, 14,
+                        juce::Justification::centred);
+        }
+    }
+}
+
+void PartialEditor::resized()
+{
+    auto header = getLocalBounds().reduced (12, 7).removeFromTop (23);
+    reset.setBounds (header.removeFromRight (80));
+    header.removeFromRight (8);
+    range.setBounds (header.removeFromRight (145));
+}
+
+void PartialEditor::mouseDown (const juce::MouseEvent& e)
+{
+    if (! e.mods.isLeftButtonDown() || ! plotBounds().contains (e.position))
+        return;
+    finishGesture();
+    drawing = true;
+    previousPartial = hoverPartial = partialAt (e.position.x);
+    previousGain = gainAt (e.position.y);
+    setGain (previousPartial, previousGain);
+    repaint();
+}
+
+void PartialEditor::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! drawing) return;
+    const int next = partialAt (e.position.x);
+    const float gain = gainAt (e.position.y);
+    const int distance = std::abs (next - previousPartial);
+    const int direction = next >= previousPartial ? 1 : -1;
+    // Fill every crossed bar even when mouse events skip several partials.
+    for (int step = 0; step <= distance; ++step)
+    {
+        const float fraction = distance == 0 ? 1.0f : (float) step / (float) distance;
+        setGain (previousPartial + step * direction,
+                 previousGain + (gain - previousGain) * fraction);
+    }
+    previousPartial = hoverPartial = next;
+    previousGain = gain;
+    repaint();
+}
+
+void PartialEditor::mouseUp (const juce::MouseEvent&)
+{
+    finishGesture();
+}
+
+void PartialEditor::mouseMove (const juce::MouseEvent& e)
+{
+    hoverPartial = plotBounds().contains (e.position) ? partialAt (e.position.x) : -1;
+    setMouseCursor (hoverPartial >= 0 ? juce::MouseCursor::CrosshairCursor
+                                     : juce::MouseCursor::NormalCursor);
+    repaint();
+}
+
+void PartialEditor::mouseExit (const juce::MouseEvent&)
+{
+    hoverPartial = -1;
+    repaint();
+}
+
+void PartialEditor::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (! plotBounds().contains (e.position)) return;
+    finishGesture();
+    setGain (partialAt (e.position.x), 1.0f);
+    finishGesture();
+    repaint();
+}
+
 // ======================================================== AddSynthEditor
 
 AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
-    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p)
+    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p), partialEditor (p)
 {
     setLookAndFeel (&lnf);
 
     addAndMakeVisible (pad);
     addAndMakeVisible (keyboard);
+    addAndMakeVisible (partialEditor);
 
     addAndMakeVisible (addButton);
     addButton.setButtonText ("add models...");
@@ -473,7 +697,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     lfo2Knob.attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         proc.apvts, "lfo2rate", lfo2Knob.slider);
 
-    setSize (900, 700);
+    setSize (900, 820);
 }
 
 AddSynthEditor::~AddSynthEditor()
@@ -548,6 +772,8 @@ void AddSynthEditor::resized()
 
     auto modArea = r.removeFromBottom (124);
     modPanelArea = modArea;
+    r.removeFromBottom (8);
+    partialEditor.setBounds (r.removeFromBottom (140));
     r.removeFromBottom (8);
     {
         auto inner = modArea.reduced (10, 6);

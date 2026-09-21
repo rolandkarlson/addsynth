@@ -68,3 +68,17 @@ target_compile_definitions(ui_snapshot PRIVATE
 target_link_libraries(ui_snapshot PRIVATE
     juce::juce_audio_utils juce::juce_dsp
     juce::juce_recommended_config_flags)
+
+# Partial editor integration: drawing, host gestures, state recall and audio.
+juce_add_console_app(partials_test PRODUCT_NAME "partials_test")
+target_sources(partials_test PRIVATE
+    test/partials.cpp
+    src/PluginProcessor.cpp
+    src/PluginEditor.cpp)
+target_compile_definitions(partials_test PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(partials_test PRIVATE
+    juce::juce_audio_utils juce::juce_dsp
+    juce::juce_recommended_config_flags)
+enable_testing()
+add_test(NAME partials COMMAND partials_test)

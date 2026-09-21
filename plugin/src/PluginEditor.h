@@ -92,6 +92,40 @@ private:
     AddSynthProcessor& proc;
 };
 
+// Draw a global gain mask over the harmonic bank. Each bar is an automatable
+// multiplier, not a replacement for the model's evolving amplitude envelope.
+class PartialEditor : public juce::Component, private juce::Timer
+{
+public:
+    explicit PartialEditor (AddSynthProcessor&);
+    ~PartialEditor() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
+private:
+    void timerCallback() override { repaint(); }
+    juce::Rectangle<float> plotBounds() const;
+    int partialAt (float x) const;
+    float gainAt (float y) const;
+    void setGain (int index, float gain);
+    void finishGesture();
+
+    std::array<juce::RangedAudioParameter*, AddVoice::maxPartials> gains {};
+    std::array<bool, AddVoice::maxPartials> gestures {};
+    juce::ComboBox range;
+    juce::TextButton reset { "reset all" };
+    int firstPartial = 0, visiblePartials = AddVoice::maxPartials;
+    int hoverPartial = -1, previousPartial = -1;
+    float previousGain = 1.0f;
+    bool drawing = false;
+};
+
 class AddSynthEditor : public juce::AudioProcessorEditor
 {
 public:
@@ -109,6 +143,7 @@ private:
 
     MorphPad pad;
     ScaleKeyboard keyboard;
+    PartialEditor partialEditor;
     juce::TextButton addButton { "Add models..." };
     juce::Label hint;
 

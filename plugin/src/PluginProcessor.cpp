@@ -8,6 +8,8 @@ AddSynthProcessor::AddSynthProcessor()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "params", makeLayout())
 {
+    for (int k = 0; k < AddVoice::maxPartials; ++k)
+        partialGainValues[(size_t) k] = apvts.getRawParameterValue (partialGainID (k));
     synth.addSound (new AddSound());
     for (int i = 0; i < kNumVoices; ++i)
     {
@@ -108,6 +110,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
         layout.add (std::make_unique<juce::AudioParameterBool> (
             "key" + juce::String (i),
             juce::String ("Scale ") + noteNames[i], false));
+    // Append new parameters and give them a later AU version hint so existing
+    // sessions retain their original parameter ordering and automation.
+    for (int k = 0; k < AddVoice::maxPartials; ++k)
+        layout.add (std::make_unique<P> (
+            juce::ParameterID { partialGainID (k), 2 },
+            "Partial " + juce::String (k + 1) + " Level",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
     return layout;
 }
 
@@ -141,6 +150,8 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.oddEven = get ("oddeven");
     p.stretchB = get ("stretch");
     p.partials = get ("partials");
+    for (int k = 0; k < AddVoice::maxPartials; ++k)
+        p.partialGains[(size_t) k] = partialGainValues[(size_t) k]->load();
     p.drift = get ("drift");
     p.pitchEnvAmt = get ("pitchenv");
     p.cursorX = get ("morphX");
