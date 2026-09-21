@@ -2,6 +2,53 @@
 
 by Roland Karlson · Algorytmid
 
+## Sine lab experiment (`codex/sine-playground`)
+
+This branch builds **AddSynth Sine Lab**, with its own AU/VST3 identity and
+standalone app. It is a pure sine instrument: the analyzed noise layer and
+the legacy Noise parameter are disabled here.
+
+Load models, then press **glitch** or **ambient** in the new sine lab panel
+and play some notes. These starting points replace the eight sequence
+patterns and set the lab/timbre controls; the loaded models stay in place.
+Use **show morph pad** to return to model positioning and the scale keyboard.
+
+- **Sequence**: eight independent partial masks. Select **1–8** and draw in
+  the bar editor below; **base** edits the global mask, which multiplies all
+  steps. The dot under a step indicates playback, independently of which
+  step you are editing. **Reset step** restores only the selected pattern.
+  Note lengths run from 1/64 to one bar (four quarter-note beats), following
+  the host's tempo and playing position, or 120 bpm when free-running.
+  **Step glide** crossfades from the previous mask over a fraction of the
+  step. Patterns and controls save with the session; the lab controls and
+  base mask are automatable, while pattern drawing is saved as custom state.
+- **Timelines**: each partial scans the model amplitude envelope separately.
+  **Speed spread** separates rates by up to three octaves in each direction;
+  **start scatter** offsets their positions; **reverse** sends a proportion
+  backward. Playheads bounce at the model boundaries while a note is held.
+  Pitch stays controlled by the existing pitch engine. Modulation destination
+  5 is now **time spread** in this experimental instrument.
+- **Memory**: releasing a note captures its current sine spectrum and pitch
+  into one of four fading layers. **Memory** mixes them in, **fade seconds**
+  sets the time to decay by 60 dB, and **clear memory** gently clears them.
+  Replaced layers fade before their oscillator state changes. Memories follow
+  the base mask and sequence; live tail contents are not stored in sessions.
+
+The sine bank renders at 4× the host sample rate. Partial amplitudes fade
+between 40% and 45% of the output sample rate (including stereo detuning),
+followed by a 513-tap linear-phase low-pass filter before downsampling. The
+plugin reports its 64-sample latency to the host. This deliberately trades
+some very high frequency output and CPU for clean spectral movement; it is
+not a mathematical claim that arbitrary modulation has zero alias energy.
+Note attacks have a minimum 3 ms transition, note release edges are smooth,
+and master-gain changes are smoothed before the output filter.
+
+Validation: `ctest --test-dir plugin/build --output-on-failure` covers pattern
+editing/recall, old-session defaults, timeline playback, memory release/clear,
+high notes, filter latency, and >97 dB rejection of the tested out-of-band
+tones at 32, 44.1, 48 and 96 kHz. The general instrument description below
+also documents features from the main branch, including its noise layer.
+
 Sample any sound into an **additive model** (per-partial envelope matrix +
 noise bands), then play, transpose, morph, and mutate it. Two halves:
 
@@ -55,7 +102,7 @@ cmake --build build --config Release -j8
 
 Builds AU + VST3 + Standalone and copies them to `~/Library/Audio/Plug-Ins/`
 automatically. In Ableton: Settings → Plug-Ins → rescan, then find
-**AddSynth** (Algorytmid).
+**AddSynth Sine Lab** (Algorytmid) on this branch.
 
 **Morph pad**: *Add models...* (multi-select .addm files, up to 16), drag
 the green nodes to place timbres on the XY field, drag the white circle to

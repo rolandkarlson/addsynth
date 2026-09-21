@@ -15,6 +15,7 @@ AddSynthProcessor::AddSynthProcessor()
     {
         auto* v = new AddVoice();
         v->setNoteCounter (&noteCounter);
+        v->setMemory (&spectralMemory);
         synth.addVoice (v);
     }
 }
@@ -90,7 +91,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
     const juce::StringArray modSources { "off", "lfo 1", "lfo 2", "env pos",
         "voice idx", "random", "velocity", "note" };
     const juce::StringArray modDests { "morph x", "morph y", "tilt", "blur",
-        "speed", "noise", "width", "stretch", "odd/even", "partials",
+        "speed", "time spread", "width", "stretch", "odd/even", "partials",
         "pitch", "loop pos" };
     for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
     {
@@ -117,12 +118,38 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
             juce::ParameterID { partialGainID (k), 2 },
             "Partial " + juce::String (k + 1) + " Level",
             juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
+    auto labFloat = [&] (const char* id, const char* name, float lo, float hi, float initial, float skew = 1.0f)
+    {
+        layout.add (std::make_unique<P> (juce::ParameterID { id, 3 }, name,
+            juce::NormalisableRange<float> (lo, hi, 0.001f, skew), initial));
+    };
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "seqon", 3 }, "Sequence", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "seqrate", 3 }, "Step Length",
+        juce::StringArray { "1/64 note", "1/32 note", "1/16 note", "1/8 note", "1/4 note", "1/2 note", "1 bar" }, 2));
+    labFloat ("seqglide", "Step Glide", 0.0f, 1.0f, 0.2f);
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "timeline", 3 }, "Partial Timelines", false));
+    labFloat ("timespread", "Time Spread", 0.0f, 1.0f, 0.0f);
+    labFloat ("timescatter", "Time Scatter", 0.0f, 1.0f, 0.0f);
+    labFloat ("timereverse", "Reverse Partials", 0.0f, 1.0f, 0.0f);
+    labFloat ("memory", "Spectral Memory", 0.0f, 1.0f, 0.0f);
+    labFloat ("memorytime", "Memory Time", 1.0f, 60.0f, 12.0f, 0.5f);
     return layout;
 }
 
 void AddSynthProcessor::prepareToPlay (double sampleRate, int)
 {
-    synth.setCurrentPlaybackSampleRate (sampleRate);
+    synth.allNotesOff (0, false);
+    synth.setCurrentPlaybackSampleRate (sampleRate * sineLab::SineOutput::factor);
+    spectralMemory.prepare (sampleRate * sineLab::SineOutput::factor);
+    outputGain.reset (sampleRate * sineLab::SineOutput::factor, 0.02);
+    outputGain.setCurrentAndTargetValue (apvts.getRawParameterValue ("gain")->load());
+    sineOutput.reset();
+    sequenceBeat = 0.0;
+    highMidi.ensureSize (16384);
+    setLatencySamples (sineLab::SineOutput::latency);
     std::fill (std::begin (heldCount), std::end (heldCount), 0);
     heldMaskDisplay.store (0);
 }
@@ -141,7 +168,13 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     AddVoice::Params p;
     auto get = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    p.noise = get ("noise");
+    p.noise = 0.0f;
+    p.timelineOn = get ("timeline") > 0.5f;
+    p.timeSpread = get ("timespread");
+    p.timeScatter = get ("timescatter");
+    p.timeReverse = get ("timereverse");
+    p.memory = get ("memory");
+    p.outputRate = getSampleRate() > 0.0 ? getSampleRate() : 44100.0;
     p.release = get ("release");
     p.attack = get ("attack");
     p.speed = get ("speed");
@@ -185,10 +218,20 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     p.lfo1 = (float) std::sin (lfoPhase1 * juce::MathConstants<double>::twoPi);
     p.lfo2 = (float) std::sin (lfoPhase2 * juce::MathConstants<double>::twoPi);
     p.bpm = 120.0f;
+    bool hostClock = false;
+    double hostBeat = 0.0;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
+        {
             if (auto bpm = pos->getBpm())
                 p.bpm = (float) *bpm;
+            if (auto beat = pos->getPpqPosition(); beat && pos->getIsPlaying())
+            {
+                hostClock = true;
+                hostBeat = *beat;
+            }
+        }
+    if (clearMemoryRequested.exchange (false)) spectralMemory.clear();
     // held-note tracking for MIDI scale mode
     for (const auto meta : midi)
     {
@@ -199,7 +242,10 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             heldCount[m.getNoteNumber() % 12] =
                 juce::jmax (0, heldCount[m.getNoteNumber() % 12] - 1);
         else if (m.isAllNotesOff() || m.isAllSoundOff())
+        {
             std::fill (std::begin (heldCount), std::end (heldCount), 0);
+            spectralMemory.clear();
+        }
     }
     int heldMask = 0;
     for (int i = 0; i < 12; ++i)
@@ -230,9 +276,54 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (! anyActive)
         noteCounter.store (0);  // first note of a phrase is always voice 0
 
-    synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
-
-    buffer.applyGain (apvts.getRawParameterValue ("gain")->load());
+    static constexpr double stepBeats[] = { 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0 };
+    const double stepLength = stepBeats[juce::jlimit (0, 6, (int) get ("seqrate"))];
+    const bool sequenceOn = get ("seqon") > 0.5f;
+    const float glide = get ("seqglide");
+    const float memoryTime = get ("memorytime");
+    outputGain.setTargetValue (get ("gain"));
+    if (hostClock) sequenceBeat = hostBeat;
+    // A fixed small quantum makes the sequencer independent of DAW block size.
+    for (int offset = 0; offset < buffer.getNumSamples();)
+    {
+        int count = juce::jmin (32, buffer.getNumSamples() - offset);
+        // Start memory captures exactly at note-off, even inside a host block.
+        for (const auto meta : midi)
+            if (meta.samplePosition > offset) count = juce::jmin (count, meta.samplePosition - offset);
+        highAudio.clear();
+        highMidi.clear();
+        for (const auto meta : midi)
+            if (meta.samplePosition >= offset && meta.samplePosition < offset + count)
+                highMidi.addEvent (meta.getMessage(), (meta.samplePosition - offset) * sineLab::SineOutput::factor);
+        const double phase = sequenceBeat / stepLength;
+        if (sequenceOn)
+        {
+            sequence.evaluate (phase, glide, p.sequenceGains);
+            sequenceStep.store ((int) (phase - std::floor (phase / sineLab::steps) * sineLab::steps));
+        }
+        else
+        {
+            p.sequenceGains.fill (1.0f);
+            sequenceStep.store (-1);
+        }
+        for (int i = 0; i < synth.getNumVoices(); ++i)
+            if (auto* voice = dynamic_cast<AddVoice*> (synth.getVoice (i))) voice->setParams (p);
+        synth.renderNextBlock (highAudio, highMidi, 0, count * sineLab::SineOutput::factor);
+        sineLab::Mask memoryMask;
+        for (int k = 0; k < AddVoice::maxPartials; ++k)
+            memoryMask[(size_t) k] = p.partialGains[(size_t) k] * p.sequenceGains[(size_t) k];
+        spectralMemory.render (highAudio, 0, count * sineLab::SineOutput::factor,
+                               p.memory, memoryTime, memoryMask);
+        for (int sample = 0; sample < count * sineLab::SineOutput::factor; ++sample)
+        {
+            const float gain = outputGain.getNextValue();
+            for (int channel = 0; channel < 2; ++channel)
+                highAudio.setSample (channel, sample, highAudio.getSample (channel, sample) * gain);
+        }
+        sineOutput.process (highAudio, buffer, offset, count);
+        sequenceBeat += count / srate * juce::jlimit (20.0f, 400.0f, p.bpm) / 60.0;
+        offset += count;
+    }
 }
 
 void AddSynthProcessor::randomizeParams()
@@ -256,7 +347,7 @@ void AddSynthProcessor::randomizeParams()
     set ("release",  uni (0.05f, 0.9f));
     set ("stretch",  std::pow (rng.nextFloat(), 3.0f) * 0.01f);
     set ("partials", uni (8.0f, 192.0f));
-    set ("noise",    uni (0.2f, 1.5f));
+    set ("noise",    0.0f);
     set ("width",    rng.nextFloat());
     set ("spreadx",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
     set ("spready",  rng.nextBool() ? 0.0f : uni (0.05f, 0.5f));
@@ -281,6 +372,53 @@ void AddSynthProcessor::randomizeParams()
     }
     // untouched: gain, morph x/y, tilt, odd/even, blur, drift, pitch env,
     // bend, scale keys, sync toggles, midiscale
+}
+
+void AddSynthProcessor::setLabPreset (bool ambient)
+{
+    auto set = [this] (const juce::String& id, float value)
+    {
+        auto* parameter = apvts.getParameter (id);
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+        parameter->endChangeGesture();
+    };
+    for (int step = 0; step < sineLab::steps; ++step)
+        for (int k = 0; k < AddVoice::maxPartials; ++k)
+        {
+            float value;
+            if (ambient)
+            {
+                const float phase = (float) k * 0.095f - (float) step * juce::MathConstants<float>::twoPi / 8.0f;
+                value = 0.12f + 0.8f * std::pow (0.5f + 0.5f * std::cos (phase), 2.0f);
+            }
+            else
+                value = (k / 3 + step * 3) % 8 < 2 ? 0.95f : 0.025f;
+            sequence.set (step, k, k == 0 ? 0.65f : value);
+        }
+    for (int k = 0; k < AddVoice::maxPartials; ++k) set (partialGainID (k), 1.0f);
+    set ("seqon", 1.0f); set ("seqrate", ambient ? 6.0f : 0.0f);
+    set ("seqglide", ambient ? 1.0f : 0.12f);
+    set ("timeline", 1.0f);
+    set ("timespread", ambient ? 0.85f : 0.75f);
+    set ("timescatter", ambient ? 0.7f : 0.4f);
+    set ("timereverse", ambient ? 0.6f : 0.55f);
+    set ("memory", ambient ? 0.65f : 0.3f);
+    set ("memorytime", ambient ? 30.0f : 5.0f);
+    set ("speed", ambient ? 0.2f : 0.7f);
+    set ("blur", ambient ? 0.18f : 0.006f);
+    set ("attack", ambient ? 0.8f : 0.002f);
+    set ("release", ambient ? 1.5f : 0.1f);
+    set ("width", ambient ? 0.9f : 0.7f);
+    set ("modal", 0.0f); set ("noise", 0.0f);
+    set ("partials", 192.0f); set ("tilt", 0.0f); set ("oddeven", 0.0f);
+    set ("stretch", 0.0f); set ("pitchenv", 0.5f);
+    set ("decay", 0.0f); set ("sustain", 1.0f); set ("looplen", 0.0f);
+    set ("syncloop", 0.0f); set ("syncspeed", 0.0f);
+    for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
+        set ("mod" + juce::String (i) + "src", 0.0f);
+    clearMemory();
+    sequenceEdited();
 }
 
 std::vector<std::pair<float, float>> AddSynthProcessor::getActiveVoiceCursors() const
@@ -361,6 +499,16 @@ void AddSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
         st.appendChild (v, nullptr);
     }
     root.appendChild (st, nullptr);
+    juce::ValueTree patterns ("sequence");
+    for (int step = 0; step < sineLab::steps; ++step)
+    {
+        juce::ValueTree row ("step");
+        juce::Array<juce::var> levels;
+        for (int k = 0; k < AddVoice::maxPartials; ++k) levels.add (sequence.get (step, k));
+        row.setProperty ("levels", juce::var (levels), nullptr);
+        patterns.appendChild (row, nullptr);
+    }
+    root.appendChild (patterns, nullptr);
     juce::MemoryOutputStream out (dest, false);
     root.writeToStream (out);
 }
@@ -370,6 +518,17 @@ void AddSynthProcessor::setStateInformation (const void* data, int size)
     auto root = juce::ValueTree::readFromData (data, (size_t) size);
     if (! root.isValid())
         return;
+    if (! root.hasType ("AddSynthState") && ! root.hasType ("params")) return;
+    sequence.reset();
+    auto patterns = root.getChildWithName ("sequence");
+    for (int step = 0; step < juce::jmin (patterns.getNumChildren(), sineLab::steps); ++step)
+    {
+        auto levels = patterns.getChild (step).getProperty ("levels");
+        if (auto* array = levels.getArray())
+            for (int k = 0; k < juce::jmin (array->size(), AddVoice::maxPartials); ++k)
+                sequence.set (step, k, (float) (double) array->getReference (k));
+    }
+    clearMemory();
 
     juce::ValueTree params, slotTree;
     if (root.hasType ("AddSynthState"))

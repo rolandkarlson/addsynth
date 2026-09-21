@@ -184,12 +184,14 @@ static void testAudio()
     {
         params.cursorX = cursor;
         RenderVoice original (field, params);
+        original.render (1024); // measure after the protected note-on transition
         auto unshaped = original.render();
         auto shapedParams = params;
         shapedParams.partialGains[0] = 0.0f;
         shapedParams.partialGains[69] = 0.35f;
         shapedParams.partialGains[191] = 0.6f;
         RenderVoice shaped (field, shapedParams);
+        shaped.render (1024);
         auto output = shaped.render();
         for (int k : { 0, 2, 69, 191 })
         {
@@ -225,8 +227,10 @@ static void testAudio()
     params.noise = 1.0f;
     params.partialGains.fill (0.0f);
     RenderVoice noise (field, params);
-    require (noise.render().getMagnitude (0, 8820) > 0.001f, "mask must preserve the noise layer");
+    require (noise.render().getMagnitude (0, 8820) < 1e-7f, "sine-only branch must never render the noise layer");
 }
+
+void testSineLab();
 
 int main()
 {
@@ -236,7 +240,8 @@ int main()
         testState();
         testDrawing();
         testAudio();
-        std::cout << "PASS: session recall, legacy defaults, drawing, host gestures, morph attenuation, live edits and noise\n";
+        testSineLab();
+        std::cout << "PASS: partial editor and sine lab\n";
         return 0;
     }
     catch (const std::exception& error)

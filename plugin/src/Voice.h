@@ -4,6 +4,7 @@
 #include <complex>
 #include <array>
 #include "MorphField.h"
+#include "SineLab.h"
 
 struct AddSound : public juce::SynthesiserSound
 {
@@ -20,7 +21,7 @@ struct AddSound : public juce::SynthesiserSound
 class AddVoice : public juce::SynthesiserVoice
 {
 public:
-    static constexpr int maxPartials = 192;
+    static constexpr int maxPartials = sineLab::partials;
     static constexpr int maxBands = 48;
 
     struct Params
@@ -41,6 +42,11 @@ public:
             gains.fill (1.0f);
             return gains;
         }();
+        sineLab::Mask sequenceGains = partialGains;
+        bool timelineOn = false;
+        float timeSpread = 0.0f, timeScatter = 0.0f, timeReverse = 0.0f;
+        float memory = 0.0f;
+        double outputRate = 0.0;   // host rate, independent of 4x rendering
         float drift = 0.0f;        // per-partial shimmer depth 0..1
         float pitchEnvAmt = 1.0f;  // scale of the analyzed pitch track
         float cursorX = 0.5f, cursorY = 0.5f;
@@ -77,6 +83,7 @@ public:
     void setField (std::shared_ptr<const MorphField> f) { pendingField = std::move (f); }
     void setParams (const Params& p) { params = p; }
     void setNoteCounter (std::atomic<int>* c) { noteCounter = c; }
+    void setMemory (sineLab::Memory* m) { memory = m; }
 
     // effective pad position of this voice (for UI ghost cursors)
     bool getDisplayCursor (float& x, float& y) const
@@ -117,7 +124,7 @@ public:
         attackGain = 0.0f;
         decayLevel = 1.0f;
         ringMax = 0.0f;
-        attackStep = 1.0f / (juce::jmax (0.001f, params.attack) * (float) sr);
+        attackStep = 1.0f / (juce::jmax (0.003f, params.attack) * (float) sr);
         voiceIndex = noteCounter != nullptr
             ? noteCounter->fetch_add (1) % juce::jmax (1, params.spreadN)
             : 0;
@@ -129,9 +136,12 @@ public:
         stolen = false;
         const int oldP = nP;
         nP = juce::jmin (field->nPartials, maxPartials);
-        nB = juce::jmin (field->nBands, maxBands);
+        nB = 0; // This experimental branch is strictly a sine bank.
+        controlElapsed = 0;
         for (int k = 0; k < nP; ++k)
         {
+            partialPosition[(size_t) k] = 0.0;
+            dryAmp0[k] = dryAmp1[k] = 0.0f;
             if (takeover && k < oldP)
             {
                 // phase continues; the ramp starts from what is sounding now
@@ -142,6 +152,7 @@ public:
             else
             {
                 zL[k] = zR[k] = { 1.0f, 0.0f };
+                wL[k] = wR[k] = { 1.0f, 0.0f };
                 amp0[k] = amp1[k] = lag[k] = ringAmp[k] = 0.0f;
             }
             log2k[k] = std::log2 ((float) (k + 1));
@@ -175,13 +186,6 @@ public:
         updateControlFrame (0);
         if (takeover)
             attackGain = 1.0f;          // no fade from zero over a live tone
-        else if (params.attack <= 0.0005f)
-        {
-            // instant attack: start directly on the model's first frame
-            attackGain = 1.0f;
-            for (int k = 0; k < nP; ++k) amp0[k] = amp1[k];
-            for (int b = 0; b < nB; ++b) ng0[b] = ng1[b];
-        }
 
         auto nyq = sr * 0.45;
         for (int b = 0; b < nB; ++b)
@@ -197,6 +201,21 @@ public:
     {
         if (allowTailOff)
         {
+            if (! releasing && memory != nullptr && params.memory > 0.0f)
+            {
+                sineLab::Memory::Frame snapshot;
+                snapshot.count = nP;
+                const float level = vel * (params.modal && params.ring > 0.005f ? 1.0f : adsr);
+                for (int k = 0; k < nP; ++k)
+                {
+                    auto n = (size_t) k;
+                    snapshot.zL[n] = zL[k]; snapshot.zR[n] = zR[k];
+                    snapshot.wL[n] = wL[k]; snapshot.wR[n] = wR[k];
+                    snapshot.amp[n] = (dryAmp0[k] + (dryAmp1[k] - dryAmp0[k]) * rampPhase) * level;
+                    snapshot.panL[n] = gL[k]; snapshot.panR[n] = gR[k];
+                }
+                memory->remember (snapshot);
+            }
             releasing = true;
             releaseStep = 1.0f / (juce::jmax (0.005f, params.release) * (float) sr);
         }
@@ -264,7 +283,7 @@ public:
             int frame = (int) framePos;
             if (frame >= field->nFrames - 1)
             {
-                if (params.modal && params.ring > 0.005f)
+                if ((params.timelineOn && ! releasing) || (params.modal && params.ring > 0.005f))
                 {
                     // modal mode: hold at the envelope end and let the
                     // ring energy decay; release still ends the voice
@@ -339,12 +358,13 @@ public:
                     if (ringMax < 1e-5f) { clearCurrentNote(); return; }
                 }
             }
-            adsr = attackGain * decayLevel * releaseGain;
+            adsr = sineLab::smoothstep (attackGain) * decayLevel * sineLab::smoothstep (releaseGain);
 
             float env = modalOn ? vel : vel * adsr;
             l[i] += sL * env;
             if (r != nullptr) r[i] += sR * env;
             framePos += frameInc;
+            ++controlElapsed;
 
             // sustain loop: while the key is held, cycle a region of the
             // envelope; release lets it play out past the loop naturally.
@@ -426,6 +446,8 @@ private:
 
     void updateControlFrame (int frame)
     {
+        const double elapsed = (double) controlElapsed;
+        controlElapsed = 0;
         currentFrame = frame;
         ctrlCountdown = juce::jmax (8, (int) (sr / field->controlRate));
         auto& fld = *field;
@@ -508,7 +530,7 @@ private:
             : 1.0f - std::exp (-1.0f / (blurT * fld.controlRate));
         const float nPart = juce::jlimit (1.0f, (float) nP,
                                           params.partials + 64.0f * modFor (9));
-        effNoise = juce::jmax (0.0f, params.noise * std::exp2 (modFor (5)));
+        effNoise = 0.0f;
 
         // stereo width: pan spread grows with harmonic number (fundamental
         // stays centered), micro-detune decorrelates L/R phase over time
@@ -518,28 +540,52 @@ private:
         const float widthDet = 2.0f * widthEff * 5.7735e-4f; // ~2 cents
 
         float frameRingMax = 0.0f;
-        auto nyq = 0.98f * (float) sr * 0.5f;
+        const double outputRate = params.outputRate > 0.0 ? params.outputRate : sr;
         for (int k = 0; k < nP; ++k)
         {
             amp0[k] = amp0[k] + (amp1[k] - amp0[k]) * startPhase;
+            dryAmp0[k] += (dryAmp1[k] - dryAmp0[k]) * startPhase;
 
             float kk = (float) (k + 1);
             float pdet = 0.0f;
             for (size_t li = 0; li < nLayers; ++li)
                 pdet += wts[li] * fld.layers[li].detune[(size_t) k];
             float freq = baseFreq * kk * std::sqrt (1.0f + B * kk * kk) * pdet;
-            if (freq >= nyq)
+            const float safeGain = sineLab::bandGain (freq * (1.0f + widthDet), outputRate);
+            if (safeGain <= 0.0f || ! std::isfinite (freq) || freq <= 0.0f)
             {
-                lag[k] += (0.0f - lag[k]) * blurAlpha;
-                amp1[k] = lag[k] * params.partialGains[(size_t) k];
-                wL[k] = wR[k] = { 1.0f, 0.0f };
+                // Fade on the previous safe oscillator; never rotate at an
+                // out-of-band frequency and never leave a frozen DC residue.
+                lag[k] = ringAmp[k] = 0.0f;
+                amp1[k] = dryAmp1[k] = 0.0f;
                 continue;
             }
 
+            int partialI0 = i0, partialI1 = i1;
+            float partialFraction = fr;
+            if (params.timelineOn)
+            {
+                const juce::uint32 hash = (juce::uint32) (k + 1) * 2654435761u;
+                const float personality = (float) (hash & 65535u) / 65535.0f;
+                const float spread = juce::jlimit (0.0f, 1.0f, params.timeSpread + modFor (5));
+                const double rate = k == 0 ? 1.0 : std::exp2 (3.0 * spread * (2.0 * personality - 1.0));
+                const double direction = k > 0 && personality < params.timeReverse ? -1.0 : 1.0;
+                partialPosition[(size_t) k] += elapsed * curFrameInc * rate * direction;
+                const double last = fld.nFrames - 1;
+                const double offset = k == 0 ? 0.0 : (params.timeScatter * personality
+                    + (direction < 0.0 ? 1.0 : 0.0)) * last;
+                const double at = sineLab::reflectedFrame (partialPosition[(size_t) k] + offset, last);
+                partialI0 = (int) at;
+                partialI1 = juce::jmin (partialI0 + 1, fld.nFrames - 1);
+                partialFraction = (float) (at - partialI0);
+            }
+            else
+                partialPosition[(size_t) k] = framePos;
+
             float acc = 0.0f;
             for (size_t li = 0; li < nLayers; ++li)
-                acc += wts[li] * (fld.logEnvAt (fld.layers[li], i0, k) * (1.0f - fr)
-                                  + fld.logEnvAt (fld.layers[li], i1, k) * fr);
+                acc += wts[li] * (fld.logEnvAt (fld.layers[li], partialI0, k) * (1.0f - partialFraction)
+                                  + fld.logEnvAt (fld.layers[li], partialI1, k) * partialFraction);
             float tgt = std::exp (acc) - MorphField::EPS;
             if (tgt < 0.0f) tgt = 0.0f;
 
@@ -572,7 +618,8 @@ private:
             }
             // Apply after blur/resonance so editing also shapes held notes and
             // existing modal tails. The amplitude ramp smooths live changes.
-            amp1[k] = a1 * params.partialGains[(size_t) k];
+            dryAmp1[k] = a1 * safeGain;
+            amp1[k] = dryAmp1[k] * params.partialGains[(size_t) k] * params.sequenceGains[(size_t) k];
 
             float pan = widthPan * panSign[k]
                       * juce::jmin (1.0f, kk / 6.0f);      // lows centered
@@ -621,6 +668,9 @@ private:
 
     std::shared_ptr<const MorphField> pendingField, field;
     Params params;
+    sineLab::Memory* memory = nullptr;
+    std::array<double, maxPartials> partialPosition {};
+    int controlElapsed = 0;
     std::atomic<int>* noteCounter = nullptr;
     int voiceIndex = 0;
     int midiNoteNum = 60;
@@ -643,6 +693,7 @@ private:
     std::complex<float> zL[maxPartials], wL[maxPartials];
     std::complex<float> zR[maxPartials], wR[maxPartials];
     float amp0[maxPartials] {}, amp1[maxPartials] {}, lag[maxPartials] {};
+    float dryAmp0[maxPartials] {}, dryAmp1[maxPartials] {};
     float ringAmp[maxPartials] {};
     float gL[maxPartials] {}, gR[maxPartials] {};
     float panSign[maxPartials] {}, detSign[maxPartials] {};

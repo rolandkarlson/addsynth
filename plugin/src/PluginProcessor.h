@@ -20,10 +20,10 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "AddSynth"; }
+    const juce::String getName() const override { return "AddSynth Sine Lab"; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    double getTailLengthSeconds() const override { return 120.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -67,6 +67,12 @@ public:
         return "partialGain" + juce::String (index + 1);
     }
 
+    sineLab::Sequence sequence;
+    int getSequenceStep() const { return sequenceStep.load(); }
+    void clearMemory() { clearMemoryRequested.store (true); }
+    void setLabPreset (bool ambient);
+    void sequenceEdited() { updateHostDisplay (ChangeDetails().withNonParameterStateChanged (true)); }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -74,6 +80,14 @@ private:
     void rebuildField();
 
     juce::Synthesiser synth;
+    sineLab::Memory spectralMemory;
+    sineLab::SineOutput sineOutput;
+    juce::SmoothedValue<float> outputGain;
+    juce::AudioBuffer<float> highAudio { 2, 32 * sineLab::SineOutput::factor };
+    juce::MidiBuffer highMidi;
+    double sequenceBeat = 0.0;
+    std::atomic<int> sequenceStep { -1 };
+    std::atomic<bool> clearMemoryRequested { false };
     std::array<std::atomic<float>*, AddVoice::maxPartials> partialGainValues {};
     std::atomic<int> noteCounter { 0 };
     double lfoPhase1 = 0.0, lfoPhase2 = 0.25;

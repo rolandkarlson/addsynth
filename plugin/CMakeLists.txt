@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(AddSynth VERSION 0.1.0)
+project(AddSynth VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,9 +24,10 @@ juce_add_plugin(AddSynth
     IS_MIDI_EFFECT FALSE
     COPY_PLUGIN_AFTER_BUILD ${ADDSYNTH_COPY_PLUGIN}
     PLUGIN_MANUFACTURER_CODE Sidz
-    PLUGIN_CODE Adsy
+    PLUGIN_CODE Adsl
+    BUNDLE_ID "com.algorytmid.addsynth-sine-lab"
     FORMATS AU VST3 Standalone
-    PRODUCT_NAME "AddSynth")
+    PRODUCT_NAME "AddSynth Sine Lab")
 
 target_sources(AddSynth PRIVATE
     src/PluginProcessor.cpp
@@ -73,6 +74,7 @@ target_link_libraries(ui_snapshot PRIVATE
 juce_add_console_app(partials_test PRODUCT_NAME "partials_test")
 target_sources(partials_test PRIVATE
     test/partials.cpp
+    test/lab.cpp
     src/PluginProcessor.cpp
     src/PluginEditor.cpp)
 target_compile_definitions(partials_test PRIVATE

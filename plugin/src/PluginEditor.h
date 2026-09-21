@@ -107,6 +107,8 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
+    void selectStep (int step);
+    int selectedStep() const { return editingStep; }
 
 private:
     void timerCallback() override { repaint(); }
@@ -115,7 +117,11 @@ private:
     float gainAt (float y) const;
     void setGain (int index, float gain);
     void finishGesture();
+    float getGain (int index) const;
 
+    AddSynthProcessor& proc;
+    int editingStep = -1;
+    bool stepChanged = false;
     std::array<juce::RangedAudioParameter*, AddVoice::maxPartials> gains {};
     std::array<bool, AddVoice::maxPartials> gestures {};
     juce::ComboBox range;
@@ -124,6 +130,31 @@ private:
     int hoverPartial = -1, previousPartial = -1;
     float previousGain = 1.0f;
     bool drawing = false;
+};
+
+class SineLabPanel : public juce::Component, private juce::Timer
+{
+public:
+    SineLabPanel (AddSynthProcessor&, PartialEditor&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+private:
+    void timerCallback() override;
+    AddSynthProcessor& proc;
+    PartialEditor& editor;
+    juce::TextButton glitch { "glitch" }, ambient { "ambient" }, base { "base" }, clear { "clear memory" };
+    std::array<juce::TextButton, sineLab::steps> steps;
+    juce::ToggleButton sequenceOn { "sequence" }, timelineOn { "timelines" };
+    juce::ComboBox rate;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> sequenceA, timelineA;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> rateA;
+    struct Control
+    {
+        juce::Slider slider;
+        juce::Label label;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+    };
+    std::array<Control, 6> controls;
 };
 
 class AddSynthEditor : public juce::AudioProcessorEditor
@@ -144,6 +175,9 @@ private:
     MorphPad pad;
     ScaleKeyboard keyboard;
     PartialEditor partialEditor;
+    SineLabPanel labPanel;
+    juce::TextButton labButton { "show morph pad" };
+    bool labVisible = true;
     juce::TextButton addButton { "Add models..." };
     juce::Label hint;
 

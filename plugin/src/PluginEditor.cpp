@@ -81,7 +81,7 @@ void AddLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b,
                                            bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (1.0f);
-    auto c = theme::pill;
+    auto c = b.getToggleState() ? theme::accent : theme::pill;
     if (down) c = c.darker (0.12f);
     else if (over) c = c.darker (0.05f);
     g.setColour (c);
@@ -345,7 +345,7 @@ void ScaleKeyboard::mouseDown (const juce::MouseEvent& e)
 
 // ======================================================== PartialEditor
 
-PartialEditor::PartialEditor (AddSynthProcessor& p)
+PartialEditor::PartialEditor (AddSynthProcessor& p) : proc (p)
 {
     for (int k = 0; k < AddVoice::maxPartials; ++k)
         gains[(size_t) k] = p.apvts.getParameter (AddSynthProcessor::partialGainID (k));
@@ -379,6 +379,7 @@ PartialEditor::PartialEditor (AddSynthProcessor& p)
     addAndMakeVisible (reset);
     setTitle ("Partial levels");
     setDescription ("Draw amplitude multipliers shared by all models, from mute to 100 percent");
+    if (proc.apvts.getRawParameterValue ("seqon")->load() > 0.5f) selectStep (0);
     startTimerHz (30);
 }
 
@@ -408,6 +409,12 @@ float PartialEditor::gainAt (float y) const
 
 void PartialEditor::setGain (int index, float gain)
 {
+    if (editingStep >= 0)
+    {
+        proc.sequence.set (editingStep, index, gain);
+        stepChanged = true;
+        return;
+    }
     auto i = (size_t) index;
     auto& parameter = *gains[i];
     if (std::abs (parameter.getValue() - gain) < 0.0005f)
@@ -422,6 +429,8 @@ void PartialEditor::setGain (int index, float gain)
 
 void PartialEditor::finishGesture()
 {
+    if (stepChanged) proc.sequenceEdited();
+    stepChanged = false;
     for (size_t k = 0; k < gestures.size(); ++k)
         if (gestures[k])
         {
@@ -430,6 +439,19 @@ void PartialEditor::finishGesture()
         }
     drawing = false;
     previousPartial = -1;
+}
+
+float PartialEditor::getGain (int index) const
+{
+    return editingStep < 0 ? gains[(size_t) index]->getValue() : proc.sequence.get (editingStep, index);
+}
+
+void PartialEditor::selectStep (int step)
+{
+    finishGesture();
+    editingStep = juce::jlimit (-1, sineLab::steps - 1, step);
+    reset.setButtonText (editingStep < 0 ? "reset all" : "reset step");
+    repaint();
 }
 
 void PartialEditor::paint (juce::Graphics& g)
@@ -442,13 +464,15 @@ void PartialEditor::paint (juce::Graphics& g)
 
     g.setColour (theme::ink);
     g.setFont (theme::font (14.0f, true));
-    g.drawText ("partial levels", 12, 8, 100, 20, juce::Justification::centredLeft);
+    g.drawText (editingStep < 0 ? juce::String ("base levels")
+                               : "step " + juce::String (editingStep + 1) + " levels",
+                12, 8, 100, 20, juce::Justification::centredLeft);
     g.setFont (theme::font (12.0f));
     g.setColour (theme::ink.withAlpha (0.65f));
     juce::String detail = "all models / drag to draw / double-click a bar to reset";
     if (hoverPartial >= 0)
     {
-        const float gain = gains[(size_t) hoverPartial]->getValue();
+        const float gain = getGain (hoverPartial);
         detail = "partial " + juce::String (hoverPartial + 1) + "  /  "
                + juce::String (juce::roundToInt (gain * 100.0f)) + "%  /  "
                + (gain <= 0.0f ? juce::String ("muted")
@@ -476,7 +500,7 @@ void PartialEditor::paint (juce::Graphics& g)
     for (int i = 0; i < visiblePartials; ++i)
     {
         const int k = firstPartial + i;
-        const float gain = gains[(size_t) k]->getValue();
+        const float gain = getGain (k);
         const float height = juce::jmax (1.5f, gain * plot.getHeight());
         const float x = plot.getX() + (float) i * width;
         const bool hovered = k == hoverPartial;
@@ -566,16 +590,133 @@ void PartialEditor::mouseDoubleClick (const juce::MouseEvent& e)
     repaint();
 }
 
+// ========================================================= SineLabPanel
+
+SineLabPanel::SineLabPanel (AddSynthProcessor& p, PartialEditor& bars) : proc (p), editor (bars)
+{
+    for (auto* button : { &glitch, &ambient, &base, &clear }) addAndMakeVisible (*button);
+    glitch.onClick = [this] { proc.setLabPreset (false); editor.selectStep (0); };
+    ambient.onClick = [this] { proc.setLabPreset (true); editor.selectStep (0); };
+    base.onClick = [this] { editor.selectStep (-1); };
+    clear.onClick = [this] { proc.clearMemory(); };
+    for (int i = 0; i < sineLab::steps; ++i)
+    {
+        auto& button = steps[(size_t) i];
+        button.setButtonText (juce::String (i + 1));
+        button.onClick = [this, i] { editor.selectStep (i); };
+        addAndMakeVisible (button);
+    }
+    for (auto* toggle : { &sequenceOn, &timelineOn })
+    {
+        toggle->setColour (juce::ToggleButton::textColourId, theme::ink);
+        toggle->setColour (juce::ToggleButton::tickColourId, theme::ink);
+        addAndMakeVisible (*toggle);
+    }
+    sequenceA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "seqon", sequenceOn);
+    timelineA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "timeline", timelineOn);
+    auto* choice = dynamic_cast<juce::AudioParameterChoice*> (proc.apvts.getParameter ("seqrate"));
+    rate.addItemList (choice->choices, 1);
+    addAndMakeVisible (rate);
+    rateA = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "seqrate", rate);
+    const char* ids[] = { "seqglide", "timespread", "timescatter", "timereverse", "memory", "memorytime" };
+    const char* labels[] = { "step glide", "speed spread", "start scatter", "reverse", "memory", "fade seconds" };
+    for (int i = 0; i < (int) controls.size(); ++i)
+    {
+        auto& control = controls[(size_t) i];
+        control.label.setText (labels[i], juce::dontSendNotification);
+        control.label.setJustificationType (juce::Justification::centred);
+        control.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        control.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 17);
+        addAndMakeVisible (control.label);
+        addAndMakeVisible (control.slider);
+        control.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ids[i], control.slider);
+    }
+    startTimerHz (20);
+    timerCallback();
+}
+
+void SineLabPanel::timerCallback()
+{
+    base.setToggleState (editor.selectedStep() < 0, juce::dontSendNotification);
+    for (int i = 0; i < sineLab::steps; ++i)
+        steps[(size_t) i].setToggleState (editor.selectedStep() == i, juce::dontSendNotification);
+    repaint();
+}
+
+void SineLabPanel::paint (juce::Graphics& g)
+{
+    g.setColour (theme::panel);
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    g.setColour (theme::ink);
+    g.setFont (theme::font (20.0f, true));
+    g.drawText ("sine lab", 14, 10, 130, 25, juce::Justification::centredLeft);
+    g.setFont (theme::font (12.0f));
+    g.setColour (theme::ink.withAlpha (0.65f));
+    g.drawText ("pure sines / evolving spectra", 144, 13, getWidth() - 158, 20, juce::Justification::centredRight);
+    g.drawText ("starting points", 14, 44, 112, 26, juce::Justification::centredLeft);
+    g.drawText ("choose a step, then draw its bars below", 14, 181, getWidth() - 28, 22,
+                juce::Justification::centredLeft);
+    g.drawText ("partials scan at different speeds and directions", 14, 230, getWidth() - 28, 20,
+                juce::Justification::centredLeft);
+    g.drawText ("released notes leave four fading sine layers", 14, 346, getWidth() - 28, 22,
+                juce::Justification::centredLeft);
+    g.drawText ("sequence follows the host / 120 bpm in standalone", 14, getHeight() - 27,
+                getWidth() - 28, 20, juce::Justification::centredLeft);
+    g.setColour (theme::ink.withAlpha (0.16f));
+    g.drawHorizontalLine (207, 14.0f, (float) getWidth() - 14.0f);
+    g.drawHorizontalLine (338, 14.0f, (float) getWidth() - 14.0f);
+    const int playing = proc.getSequenceStep();
+    if (playing >= 0)
+    {
+        const auto button = steps[(size_t) playing].getBounds().toFloat();
+        g.setColour (theme::ink);
+        g.fillEllipse (button.getCentreX() - 2.0f, button.getBottom() + 3.0f, 4.0f, 4.0f);
+    }
+}
+
+void SineLabPanel::resized()
+{
+    const int width = getWidth() - 28;
+    glitch.setBounds (126, 44, (width - 118) / 2, 26);
+    ambient.setBounds (glitch.getRight() + 6, 44, (width - 118) / 2, 26);
+    sequenceOn.setBounds (14, 100, 108, 26);
+    rate.setBounds (126, 100, width - 208, 26);
+    base.setBounds (14, 149, 58, 27);
+    const int buttonWidth = (width - 62) / sineLab::steps;
+    for (int i = 0; i < sineLab::steps; ++i)
+        steps[(size_t) i].setBounds (78 + i * buttonWidth, 149, buttonWidth - 3, 27);
+    timelineOn.setBounds (14, 211, 140, 24);
+    auto place = [] (Control& control, juce::Rectangle<int> rect)
+    {
+        control.label.setBounds (rect.removeFromTop (18));
+        control.slider.setBounds (rect);
+    };
+    place (controls[0], { getWidth() - 92, 77, 78, 65 });
+    for (int i = 0; i < 3; ++i)
+        place (controls[(size_t) i + 1], { 14 + i * width / 3, 254, width / 3 - 4, 77 });
+    place (controls[4], { 14, 372, width / 3 - 4, 76 });
+    place (controls[5], { 14 + width / 3, 372, width / 3 - 4, 76 });
+    clear.setBounds (14 + width * 2 / 3, 400, width / 3 - 4, 28);
+}
+
 // ======================================================== AddSynthEditor
 
 AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
-    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p), partialEditor (p)
+    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p), partialEditor (p), labPanel (p, partialEditor)
 {
     setLookAndFeel (&lnf);
 
     addAndMakeVisible (pad);
     addAndMakeVisible (keyboard);
     addAndMakeVisible (partialEditor);
+    addAndMakeVisible (labPanel);
+    addAndMakeVisible (labButton);
+    labButton.onClick = [this]
+    {
+        labVisible = ! labVisible;
+        labButton.setButtonText (labVisible ? "show morph pad" : "show sine lab");
+        resized();
+    };
 
     addAndMakeVisible (addButton);
     addButton.setButtonText ("add models...");
@@ -589,7 +730,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     hint.setJustificationType (juce::Justification::centredLeft);
 
     static const std::pair<const char*, const char*> knobDefs[] = {
-        { "gain", "gain" },       { "noise", "noise" },     { "speed", "speed" },
+        { "gain", "gain" },       { "memory", "memory" },   { "speed", "speed" },
         { "tilt", "tilt" },       { "oddeven", "odd/even" },{ "stretch", "stretch" },
         { "partials", "partials" },{ "blur", "blur" },      { "drift", "drift" },
         { "attack", "attack" },   { "release", "release" }, { "pitchenv", "pitch env" },
@@ -655,7 +796,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     const juce::StringArray srcItems { "off", "lfo 1", "lfo 2", "env pos",
         "voice idx", "random", "velocity", "note" };
     const juce::StringArray dstItems { "morph x", "morph y", "tilt", "blur",
-        "speed", "noise", "width", "stretch", "odd/even", "partials",
+        "speed", "time spread", "width", "stretch", "odd/even", "partials",
         "pitch", "loop pos" };
     for (int i = 0; i < AddVoice::Params::nModSlots; ++i)
     {
@@ -761,12 +902,13 @@ void AddSynthEditor::paint (juce::Graphics& g)
     g.setFont (theme::font (13.5f));
     g.drawText ("additive morph synth", 132, 10, 240, 18,
                 juce::Justification::centredLeft);
-    g.drawText ("algorytmid · roland karlson", getWidth() - 260, 10, 244, 18,
+    g.drawText ("experimental / pure sines", getWidth() - 395, 10, 225, 18,
                 juce::Justification::centredRight);
 }
 
 void AddSynthEditor::resized()
 {
+    labButton.setBounds (getWidth() - 160, 7, 146, 26);
     auto r = getLocalBounds().reduced (14);
     r.removeFromTop (28);
 
@@ -807,6 +949,10 @@ void AddSynthEditor::resized()
 
     // left column: pad with the scale keyboard underneath
     auto left = r.removeFromLeft (juce::jmin (r.getHeight() - 58, 410));
+    labPanel.setBounds (left);
+    labPanel.setVisible (labVisible);
+    pad.setVisible (! labVisible);
+    keyboard.setVisible (! labVisible);
     keyboard.setBounds (left.removeFromBottom (52));
     left.removeFromBottom (6);
     pad.setBounds (left);

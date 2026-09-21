@@ -19,41 +19,44 @@ jobs:
         run: cmake -B plugin/build -S plugin -A x64 -DADDSYNTH_COPY_PLUGIN=OFF
 
       - name: build
-        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_Standalone
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_Standalone partials_test
+
+      - name: test sine lab
+        run: ctest --test-dir plugin/build -C Release --output-on-failure
 
       - name: package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item -Recurse "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
-          Copy-Item "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.exe" dist/
+          Copy-Item -Recurse "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth Sine Lab.vst3" dist/
+          Copy-Item "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth Sine Lab.exe" dist/
           if (Test-Path models) { Copy-Item -Recurse models dist/ }
           @"
-          AddSynth (Windows)
+          AddSynth Sine Lab (Windows)
           ==================
-          1. Copy the AddSynth.vst3 FOLDER into:
+          1. Copy the AddSynth Sine Lab.vst3 FOLDER into:
              C:\Program Files\Common Files\VST3\
           2. Rescan plugins in your DAW (Ableton: Options > Preferences >
-             Plug-Ins > Rescan). Find "AddSynth" by Algorytmid.
-          AddSynth.exe runs standalone without a DAW (pick your audio/MIDI
+             Plug-Ins > Rescan). Find "AddSynth Sine Lab" by Algorytmid.
+          AddSynth Sine Lab.exe runs standalone without a DAW (pick your audio/MIDI
           device in its options button).
           Click "add models..." and load .addm model files.
           "@ | Set-Content dist/README.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AddSynth-Windows
+          name: AddSynth-Sine-Lab-Windows
           path: dist/
 
       - name: zip
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath AddSynth-Windows.zip
+        run: Compress-Archive -Path dist/* -DestinationPath AddSynth-Sine-Lab-Windows.zip
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: AddSynth-Windows.zip
+          files: AddSynth-Sine-Lab-Windows.zip
 
   macos:
     runs-on: macos-latest
@@ -64,26 +67,29 @@ jobs:
         run: cmake -B plugin/build -S plugin -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DADDSYNTH_COPY_PLUGIN=OFF
 
       - name: build
-        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_AU AddSynth_Standalone -j3
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_AU AddSynth_Standalone partials_test -j3
+
+      - name: test sine lab
+        run: ctest --test-dir plugin/build -C Release --output-on-failure
 
       - name: package
         run: |
           mkdir -p dist
-          cp -R "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth.vst3" dist/
-          cp -R "plugin/build/AddSynth_artefacts/Release/AU/AddSynth.component" dist/
-          cp -R "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth.app" dist/
+          cp -R "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth Sine Lab.vst3" dist/
+          cp -R "plugin/build/AddSynth_artefacts/Release/AU/AddSynth Sine Lab.component" dist/
+          cp -R "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth Sine Lab.app" dist/
           [ -d models ] && cp -R models dist/ || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AddSynth-macOS
+          name: AddSynth-Sine-Lab-macOS
           path: dist/
 
       - name: zip
         if: startsWith(github.ref, 'refs/tags/')
-        run: ditto -c -k --keepParent dist AddSynth-macOS.zip
+        run: ditto -c -k --keepParent dist AddSynth-Sine-Lab-macOS.zip
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: AddSynth-macOS.zip
+          files: AddSynth-Sine-Lab-macOS.zip
