@@ -11,7 +11,41 @@ the legacy Noise parameter are disabled here.
 Load models, then press **glitch** or **ambient** in the new sine lab panel
 and play some notes. These starting points replace the eight sequence
 patterns and set the lab/timbre controls; the loaded models stay in place.
-Use **show morph pad** to return to model positioning and the scale keyboard.
+Use the top-right view menu to switch between **morph pad**, **sine lab**, and
+**spectral planes**.
+
+### Spectral Planes
+
+Select **spectral planes**, load a model, and press **try planes**. This
+starting point combines an orbit through two built-in spectral planes with
+the ambient timelines and memory settings. Sequence playback is disabled
+so the plane movement is easy to hear.
+
+- **Orbit Hz** controls movement within the plane (0 holds its position,
+  up to 4 cycles/second). **Ellipse / circle** changes the orbit shape.
+- **Plane A / B** changes the plane itself. **Depth** mixes the resulting
+  attenuation mask with the unmodified signal; 0 is transparent.
+- **Capture A / B** each builds a whole plane from two moments of the
+  currently blended models, including the base partial mask. **Capture
+  position** chooses the first moment and **capture gap** their separation,
+  as fractions of the common model timeline. If there is no room ahead,
+  the second moment is taken earlier. No note needs to be sounding.
+- Change the morph-pad position or capture controls before capturing the
+  other plane. The captured basis vectors and labels save with the session.
+  Static/proportional spectra receive a deterministic independent companion,
+  explicitly reported as **companion added**. Silent captures leave the
+  existing plane intact and display a message.
+
+Each plane has two orthonormal vectors in 192-dimensional partial space.
+Morphing aligns equivalent bases (including sign changes and reflections),
+blends them, then reorthogonalises. This is a continuous subspace morph,
+not an exact Grassmannian geodesic. Orbital coordinates are mapped through
+absolute value and peak normalisation into an attenuation-only mask; this
+mapping has half-turn symmetry. The mask is smoothed over 20 ms and multiplies
+the base mask and sequence on both live notes and memory layers, before
+the existing 4x render/anti-alias filter. The live graph displays that mask.
+Earlier sessions default to planes bypassed. The captured data persists,
+but the live orbit phase restarts when playback is prepared.
 
 - **Sequence**: eight independent partial masks. Select **1–8** and draw in
   the bar editor below; **base** edits the global mask, which multiplies all

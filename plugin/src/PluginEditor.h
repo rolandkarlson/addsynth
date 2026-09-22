@@ -157,6 +157,28 @@ private:
     std::array<Control, 6> controls;
 };
 
+class SpectralPlanesPanel : public juce::Component, private juce::Timer
+{
+public:
+    explicit SpectralPlanesPanel (AddSynthProcessor&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+private:
+    void timerCallback() override { repaint(); }
+    AddSynthProcessor& proc;
+    juce::TextButton preset { "try planes" }, captureA { "capture A" }, captureB { "capture B" };
+    juce::ToggleButton enabled { "enabled" };
+    juce::Label status;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> enabledA;
+    struct Control
+    {
+        juce::Slider slider;
+        juce::Label label;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+    };
+    std::array<Control, 6> controls;
+};
+
 class AddSynthEditor : public juce::AudioProcessorEditor
 {
 public:
@@ -176,8 +198,8 @@ private:
     ScaleKeyboard keyboard;
     PartialEditor partialEditor;
     SineLabPanel labPanel;
-    juce::TextButton labButton { "show morph pad" };
-    bool labVisible = true;
+    SpectralPlanesPanel planesPanel;
+    juce::ComboBox viewChoice;
     juce::TextButton addButton { "Add models..." };
     juce::Label hint;
 

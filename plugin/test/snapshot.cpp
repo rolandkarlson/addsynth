@@ -1,5 +1,5 @@
 // Renders the plugin editor offscreen to a PNG (UI review without a DAW).
-// usage: ui_snapshot [--glitch|--ambient] [--render out.wav] [models...] out.png
+// usage: ui_snapshot [--glitch|--ambient|--planes] [--render out.wav] [models...] out.png
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../src/PluginProcessor.h"
 #include "../src/PluginEditor.h"
@@ -23,6 +23,7 @@ int main (int argc, char** argv)
         const juce::String arg (argv[i]);
         if (arg == "--glitch") { preset = 0; continue; }
         if (arg == "--ambient") { preset = 1; continue; }
+        if (arg == "--planes") { preset = 2; continue; }
         if (arg == "--render" && i + 1 < argc - 1) { audioPath = argv[++i]; continue; }
         if (mi >= 4) continue;
         juce::String err;
@@ -39,7 +40,8 @@ int main (int argc, char** argv)
             ->setValueNotifyingHost (1.0f);
     proc.apvts.getParameter ("morphX")->setValueNotifyingHost (0.42f);
     proc.apvts.getParameter ("morphY")->setValueNotifyingHost (0.58f);
-    if (preset >= 0) proc.setLabPreset (preset == 1);
+    if (preset == 2) proc.setPlanesPreset();
+    else if (preset >= 0) proc.setLabPreset (preset == 1);
 
     if (audioPath.isNotEmpty())
     {

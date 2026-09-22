@@ -234,9 +234,115 @@ static void testProcessorAudio()
     std::cout << "PASS: sequence editing/recall, reflected timelines, memory release/clear, processor sequence and high notes\n";
 }
 
+static void testSpectralPlanes()
+{
+    using Plane = sineLab::SpectralPlane;
+    auto orthonormal = [] (const Plane& plane)
+    {
+        check (std::abs (Plane::dot (plane.u, plane.u) - 1.0f) < 1e-5f, "plane first axis is not unit length");
+        check (std::abs (Plane::dot (plane.v, plane.v) - 1.0f) < 1e-5f, "plane second axis is not unit length");
+        check (std::abs (Plane::dot (plane.u, plane.v)) < 1e-5f, "plane axes are not independent");
+    };
+    const auto defaults = sineLab::defaultPlanes();
+    sineLab::Mask zero {}, single {};
+    single[0] = 1.0f;
+    orthonormal (Plane::fromSpectra (zero, zero));
+    const auto flat = Plane::fromSpectra (single, single);
+    orthonormal (flat);
+    check (flat.addedCompanion, "dependent capture must report its added companion");
+    for (int variant = 0; variant < 3; ++variant)
+    {
+        auto equivalent = defaults[0];
+        if (variant == 0) std::swap (equivalent.u, equivalent.v);
+        if (variant == 1)
+            for (auto* axis : { &equivalent.u, &equivalent.v }) for (auto& x : *axis) x = -x;
+        if (variant == 2)
+            for (size_t k = 0; k < single.size(); ++k)
+            {
+                equivalent.u[k] = defaults[0].u[k] * 0.6f + defaults[0].v[k] * 0.8f;
+                equivalent.v[k] = defaults[0].u[k] * -0.8f + defaults[0].v[k] * 0.6f;
+            }
+        for (int step = 0; step <= 10; ++step)
+        {
+            const auto blend = Plane::blend (defaults[0], equivalent, (float) step / 10.0f);
+            orthonormal (blend);
+            check (Plane::dot (blend.u, defaults[0].u) > 0.9999f
+                && Plane::dot (blend.v, defaults[0].v) > 0.9999f,
+                "swapping/signing/rotating a basis must not change its plane morph");
+        }
+    }
+    for (int step = 0; step <= 100; ++step)
+    {
+        const auto blend = Plane::blend (defaults[0], defaults[1], (float) step / 100.0f);
+        orthonormal (blend);
+        for (float shape : { 0.0f, 0.5f, 1.0f })
+            for (float value : blend.orbit ((double) step / 19.0, shape))
+                check (std::isfinite (value) && value >= 0.0f && value <= 1.000001f, "orbit escaped attenuation bounds");
+    }
+
+    AddSynthProcessor captured;
+    juce::String message;
+    check (! captured.capturePlane (0, message), "empty model capture should report an error");
+    Fixture fixture;
+    fixture.load (captured);
+    check (captured.capturePlane (0, message), "model capture failed");
+    orthonormal (captured.getPlanes()[0]);
+    set (captured, "planeson", 1.0f);
+    set (captured, "planemorph", 0.75f);
+    juce::MemoryBlock saved;
+    captured.getStateInformation (saved);
+    AddSynthProcessor recalled;
+    recalled.setStateInformation (saved.getData(), (int) saved.getSize());
+    const auto before = captured.getPlanes(), after = recalled.getPlanes();
+    for (int plane = 0; plane < 2; ++plane)
+        check (Plane::dot (before[(size_t) plane].u, after[(size_t) plane].u) > 0.99999f
+            && Plane::dot (before[(size_t) plane].v, after[(size_t) plane].v) > 0.99999f,
+            "captured planes did not survive session recall");
+    check (recalled.getPlaneName (0) == captured.getPlaneName (0), "plane capture label not recalled");
+    auto old = juce::ValueTree::readFromData (saved.getData(), saved.getSize());
+    old.removeChild (old.getChildWithName ("spectralPlanes"), nullptr);
+    auto params = old.getChildWithName ("params");
+    for (int i = params.getNumChildren(); --i >= 0;)
+    {
+        auto* p = recalled.apvts.getParameter (params.getChild (i).getProperty ("id").toString());
+        if (p != nullptr && p->getVersionHint() == 4) params.removeChild (i, nullptr);
+    }
+    juce::MemoryBlock legacy;
+    juce::MemoryOutputStream stream (legacy, false);
+    old.writeToStream (stream);
+    recalled.setStateInformation (legacy.getData(), (int) legacy.getSize());
+    check (recalled.apvts.getRawParameterValue ("planeson")->load() == 0.0f, "old sessions must bypass planes");
+
+    AddSynthProcessor dry, bypass, wet;
+    for (auto* processor : { &dry, &bypass, &wet })
+    {
+        fixture.load (*processor);
+        set (*processor, "speed", 0.0f);
+    }
+    set (bypass, "planeson", 1.0f); set (bypass, "planedepth", 0.0f);
+    set (wet, "planeson", 1.0f); set (wet, "planedepth", 1.0f); set (wet, "orbithz", 4.0f);
+    auto a = render (dry, 12000, true), b = render (bypass, 12000, true), c = render (wet, 12000, true);
+    double difference = 0;
+    for (int i = 0; i < 12000; ++i)
+    {
+        check (std::abs (a.getSample (0, i) - b.getSample (0, i)) < 1e-8f, "zero depth changed the audio");
+        difference += std::abs (a.getSample (0, i) - c.getSample (0, i));
+    }
+    check (difference / 12000 > 1e-4, "plane orbit had no audible effect");
+    set (wet, "orbithz", 0.0f);
+    render (wet, 512);
+    const float frozen = wet.getPlanePhase();
+    render (wet, 512);
+    check (wet.getPlanePhase() == frozen, "zero orbit speed should freeze the orbit");
+    for (int k = 0; k < sineLab::partials; ++k)
+        check (wet.getPlaneLevel (k) >= 0.0f && wet.getPlaneLevel (k) <= 1.0f, "live plane mask boosted a partial");
+    std::cout << "PASS: plane rank, basis invariance, bounded orbit, capture/recall, bypass and live audio\n";
+}
+
 void testSineLab()
 {
     testSequenceStateAndEditing();
     testOutputFilter();
     testProcessorAudio();
+    testSpectralPlanes();
 }

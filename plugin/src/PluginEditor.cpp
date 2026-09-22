@@ -699,10 +699,101 @@ void SineLabPanel::resized()
     clear.setBounds (14 + width * 2 / 3, 400, width / 3 - 4, 28);
 }
 
+// =================================================== SpectralPlanesPanel
+
+SpectralPlanesPanel::SpectralPlanesPanel (AddSynthProcessor& p) : proc (p)
+{
+    for (auto* button : { &preset, &captureA, &captureB }) addAndMakeVisible (*button);
+    preset.onClick = [this]
+    {
+        proc.setPlanesPreset();
+        status.setText ("play a note; turn plane morph to explore", juce::dontSendNotification);
+    };
+    auto capture = [this] (int index)
+    {
+        juce::String message;
+        proc.capturePlane (index, message);
+        status.setText (message, juce::dontSendNotification);
+        repaint();
+    };
+    captureA.onClick = [capture] { capture (0); };
+    captureB.onClick = [capture] { capture (1); };
+    addAndMakeVisible (enabled);
+    enabled.setColour (juce::ToggleButton::textColourId, theme::ink);
+    enabled.setColour (juce::ToggleButton::tickColourId, theme::ink);
+    enabledA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "planeson", enabled);
+    addAndMakeVisible (status);
+    status.setText ("try planes, or capture two moments from your models", juce::dontSendNotification);
+    const char* ids[] = { "orbithz", "orbitshape", "planemorph", "planedepth", "capturepos", "capturegap" };
+    const char* labels[] = { "orbit hz", "ellipse / circle", "plane A / B", "depth", "capture position", "capture gap" };
+    for (int i = 0; i < (int) controls.size(); ++i)
+    {
+        auto& control = controls[(size_t) i];
+        control.label.setText (labels[i], juce::dontSendNotification);
+        control.label.setJustificationType (juce::Justification::centred);
+        control.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        control.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 17);
+        addAndMakeVisible (control.label);
+        addAndMakeVisible (control.slider);
+        control.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ids[i], control.slider);
+    }
+    startTimerHz (30);
+}
+
+void SpectralPlanesPanel::paint (juce::Graphics& g)
+{
+    g.setColour (theme::panel);
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+    g.setColour (theme::ink);
+    g.setFont (theme::font (20.0f, true));
+    g.drawText ("spectral planes", 14, 10, 240, 26, juce::Justification::centredLeft);
+    g.setFont (theme::font (12.0f));
+    g.drawText ("A / " + proc.getPlaneName (0), 14, 78, getWidth() - 28, 18, juce::Justification::centredLeft);
+    g.drawText ("B / " + proc.getPlaneName (1), 14, 98, getWidth() - 28, 18, juce::Justification::centredLeft);
+    auto visual = juce::Rectangle<float> (14.0f, 123.0f, (float) getWidth() - 28.0f, 118.0f);
+    g.setColour (theme::padBg);
+    g.fillRoundedRectangle (visual, 8.0f);
+    const auto centre = juce::Point<float> (visual.getX() + 59.0f, visual.getCentreY());
+    const float shape = 0.15f + 0.85f * proc.apvts.getRawParameterValue ("orbitshape")->load();
+    g.setColour (theme::ink.withAlpha (0.3f));
+    g.drawEllipse (centre.x - 43, centre.y - 43 * shape, 86, 86 * shape, 1.5f);
+    const float phase = proc.getPlanePhase() * juce::MathConstants<float>::twoPi;
+    g.setColour (theme::accent);
+    g.fillEllipse (centre.x + 43 * std::cos (phase) - 4, centre.y - 43 * shape * std::sin (phase) - 4, 8, 8);
+    const float x = visual.getX() + 122.0f;
+    const float width = (visual.getRight() - x - 8.0f) / (float) sineLab::partials;
+    for (int k = 0; k < sineLab::partials; ++k)
+    {
+        const float height = proc.getPlaneLevel (k) * 94.0f;
+        g.fillRect (x + (float) k * width, visual.getBottom() - 12.0f - height,
+                    juce::jmax (0.7f, width - 0.3f), juce::jmax (1.0f, height));
+    }
+    g.setColour (theme::ink.withAlpha (0.65f));
+    g.drawText ("0 hz holds the orbit / depth 0 leaves the sound unchanged", 14, getHeight() - 28,
+                getWidth() - 28, 18, juce::Justification::centredLeft);
+}
+
+void SpectralPlanesPanel::resized()
+{
+    enabled.setBounds (getWidth() - 110, 12, 96, 24);
+    const int width = (getWidth() - 36) / 3;
+    preset.setBounds (14, 45, width, 27);
+    captureA.setBounds (18 + width, 45, width, 27);
+    captureB.setBounds (22 + 2 * width, 45, width, 27);
+    for (int i = 0; i < (int) controls.size(); ++i)
+    {
+        auto bounds = juce::Rectangle<int> (14 + (i % 3) * (getWidth() - 28) / 3,
+                                           252 + (i / 3) * 85, (getWidth() - 28) / 3 - 4, 79);
+        controls[(size_t) i].label.setBounds (bounds.removeFromTop (18));
+        controls[(size_t) i].slider.setBounds (bounds);
+    }
+    status.setBounds (10, 426, getWidth() - 20, 22);
+}
+
 // ======================================================== AddSynthEditor
 
 AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
-    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p), partialEditor (p), labPanel (p, partialEditor)
+    : AudioProcessorEditor (p), proc (p), pad (p), keyboard (p), partialEditor (p), labPanel (p, partialEditor), planesPanel (p)
 {
     setLookAndFeel (&lnf);
 
@@ -710,13 +801,13 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     addAndMakeVisible (keyboard);
     addAndMakeVisible (partialEditor);
     addAndMakeVisible (labPanel);
-    addAndMakeVisible (labButton);
-    labButton.onClick = [this]
-    {
-        labVisible = ! labVisible;
-        labButton.setButtonText (labVisible ? "show morph pad" : "show sine lab");
-        resized();
-    };
+    addAndMakeVisible (planesPanel);
+    addAndMakeVisible (viewChoice);
+    viewChoice.addItem ("morph pad", 1);
+    viewChoice.addItem ("sine lab", 2);
+    viewChoice.addItem ("spectral planes", 3);
+    viewChoice.setSelectedId (3, juce::dontSendNotification);
+    viewChoice.onChange = [this] { resized(); };
 
     addAndMakeVisible (addButton);
     addButton.setButtonText ("add models...");
@@ -908,7 +999,7 @@ void AddSynthEditor::paint (juce::Graphics& g)
 
 void AddSynthEditor::resized()
 {
-    labButton.setBounds (getWidth() - 160, 7, 146, 26);
+    viewChoice.setBounds (getWidth() - 160, 7, 146, 26);
     auto r = getLocalBounds().reduced (14);
     r.removeFromTop (28);
 
@@ -950,9 +1041,11 @@ void AddSynthEditor::resized()
     // left column: pad with the scale keyboard underneath
     auto left = r.removeFromLeft (juce::jmin (r.getHeight() - 58, 410));
     labPanel.setBounds (left);
-    labPanel.setVisible (labVisible);
-    pad.setVisible (! labVisible);
-    keyboard.setVisible (! labVisible);
+    planesPanel.setBounds (left);
+    labPanel.setVisible (viewChoice.getSelectedId() == 2);
+    planesPanel.setVisible (viewChoice.getSelectedId() == 3);
+    pad.setVisible (viewChoice.getSelectedId() == 1);
+    keyboard.setVisible (viewChoice.getSelectedId() == 1);
     keyboard.setBounds (left.removeFromBottom (52));
     left.removeFromBottom (6);
     pad.setBounds (left);

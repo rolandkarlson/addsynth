@@ -8,6 +8,8 @@ AddSynthProcessor::AddSynthProcessor()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "params", makeLayout())
 {
+    planeSmooth.fill (1.0f);
+    for (auto& level : planeDisplay) level.store (1.0f);
     for (int k = 0; k < AddVoice::maxPartials; ++k)
         partialGainValues[(size_t) k] = apvts.getRawParameterValue (partialGainID (k));
     synth.addSound (new AddSound());
@@ -136,6 +138,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayou
     labFloat ("timereverse", "Reverse Partials", 0.0f, 1.0f, 0.0f);
     labFloat ("memory", "Spectral Memory", 0.0f, 1.0f, 0.0f);
     labFloat ("memorytime", "Memory Time", 1.0f, 60.0f, 12.0f, 0.5f);
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "planeson", 4 }, "Spectral Planes", false));
+    auto planeFloat = [&] (const char* id, const char* name, float lo, float hi, float initial, float skew = 1.0f)
+    {
+        layout.add (std::make_unique<P> (juce::ParameterID { id, 4 }, name,
+            juce::NormalisableRange<float> (lo, hi, 0.001f, skew), initial));
+    };
+    planeFloat ("orbithz", "Orbit Speed", 0.0f, 4.0f, 0.12f, 0.35f);
+    planeFloat ("orbitshape", "Orbit Shape", 0.0f, 1.0f, 1.0f);
+    planeFloat ("planemorph", "Plane Morph", 0.0f, 1.0f, 0.0f);
+    planeFloat ("planedepth", "Plane Depth", 0.0f, 1.0f, 0.8f);
+    planeFloat ("capturepos", "Plane Capture Position", 0.0f, 1.0f, 0.1f);
+    planeFloat ("capturegap", "Plane Capture Gap", 0.01f, 1.0f, 0.35f);
     return layout;
 }
 
@@ -148,6 +163,8 @@ void AddSynthProcessor::prepareToPlay (double sampleRate, int)
     outputGain.setCurrentAndTargetValue (apvts.getRawParameterValue ("gain")->load());
     sineOutput.reset();
     sequenceBeat = 0.0;
+    planePhase = 0.0;
+    planeSmooth.fill (1.0f);
     highMidi.ensureSize (16384);
     setLatencySamples (sineLab::SineOutput::latency);
     std::fill (std::begin (heldCount), std::end (heldCount), 0);
@@ -281,6 +298,13 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const bool sequenceOn = get ("seqon") > 0.5f;
     const float glide = get ("seqglide");
     const float memoryTime = get ("memorytime");
+    {
+        const juce::SpinLock::ScopedTryLockType lock (planesLock);
+        if (lock.isLocked()) audioPlanes = planes;
+    }
+    const auto orbitPlane = sineLab::SpectralPlane::blend (audioPlanes[0], audioPlanes[1], get ("planemorph"));
+    const float planeDepth = get ("planeson") > 0.5f ? get ("planedepth") : 0.0f;
+    const float orbitHz = get ("orbithz"), orbitShape = get ("orbitshape");
     outputGain.setTargetValue (get ("gain"));
     if (hostClock) sequenceBeat = hostBeat;
     // A fixed small quantum makes the sequencer independent of DAW block size.
@@ -306,6 +330,19 @@ void AddSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             p.sequenceGains.fill (1.0f);
             sequenceStep.store (-1);
         }
+        const auto orbitMask = orbitPlane.orbit (planePhase, orbitShape);
+        const float follow = 1.0f - std::exp (-(float) count / ((float) srate * 0.02f));
+        for (int k = 0; k < sineLab::partials; ++k)
+        {
+            auto n = (size_t) k;
+            const float target = 1.0f + planeDepth * (orbitMask[n] - 1.0f);
+            planeSmooth[n] += (target - planeSmooth[n]) * follow;
+            p.sequenceGains[n] *= planeSmooth[n];
+            planeDisplay[n].store (planeSmooth[n]);
+        }
+        planePhaseDisplay.store ((float) planePhase);
+        planePhase += (double) orbitHz * count / srate;
+        planePhase -= std::floor (planePhase);
         for (int i = 0; i < synth.getNumVoices(); ++i)
             if (auto* voice = dynamic_cast<AddVoice*> (synth.getVoice (i))) voice->setParams (p);
         synth.renderNextBlock (highAudio, highMidi, 0, count * sineLab::SineOutput::factor);
@@ -374,6 +411,93 @@ void AddSynthProcessor::randomizeParams()
     // bend, scale keys, sync toggles, midiscale
 }
 
+std::array<sineLab::SpectralPlane, 2> AddSynthProcessor::getPlanes() const
+{
+    const juce::SpinLock::ScopedLockType lock (planesLock);
+    return planes;
+}
+
+juce::String AddSynthProcessor::getPlaneName (int index) const
+{
+    const juce::SpinLock::ScopedLockType lock (planesLock);
+    return planeNames[(size_t) juce::jlimit (0, 1, index)];
+}
+
+bool AddSynthProcessor::capturePlane (int index, juce::String& message)
+{
+    if (index < 0 || index > 1) return false;
+    std::shared_ptr<const MorphField> source;
+    {
+        const juce::SpinLock::ScopedLockType lock (fieldLock);
+        source = field;
+    }
+    if (source == nullptr || source->layers.empty())
+    {
+        message = "add a model before capturing a plane";
+        return false;
+    }
+    const float position = apvts.getRawParameterValue ("capturepos")->load();
+    const float gap = apvts.getRawParameterValue ("capturegap")->load();
+    const float second = position + gap <= 1.0f ? position + gap : juce::jmax (0.0f, position - gap);
+    float weights[MorphField::maxLayers] {};
+    source->computeWeights (apvts.getRawParameterValue ("morphX")->load(),
+                            apvts.getRawParameterValue ("morphY")->load(), weights);
+    auto spectrum = [&] (float at)
+    {
+        sineLab::Mask result {};
+        const float frame = at * (float) (source->nFrames - 1);
+        const int i = (int) frame, j = juce::jmin (i + 1, source->nFrames - 1);
+        const float fraction = frame - (float) i;
+        for (int k = 0; k < source->nPartials; ++k)
+        {
+            float value = 0.0f;
+            for (size_t layer = 0; layer < source->layers.size(); ++layer)
+                value += weights[layer] * ((1.0f - fraction) * source->logEnvAt (source->layers[layer], i, k)
+                                          + fraction * source->logEnvAt (source->layers[layer], j, k));
+            result[(size_t) k] = juce::jmax (0.0f, std::exp (value) - MorphField::EPS)
+                               * partialGainValues[(size_t) k]->load();
+        }
+        return result;
+    };
+    const auto first = spectrum (position), other = spectrum (second);
+    if (sineLab::SpectralPlane::dot (first, first) + sineLab::SpectralPlane::dot (other, other) < 1e-14f)
+    {
+        message = "silent capture: change position or raise the base bars";
+        return false;
+    }
+    const auto captured = sineLab::SpectralPlane::fromSpectra (first, other);
+    message = "captured " + juce::String (juce::roundToInt (100.0f * position)) + "% / "
+            + juce::String (juce::roundToInt (100.0f * second)) + "%";
+    if (captured.addedCompanion) message += " (companion added)";
+    {
+        const juce::SpinLock::ScopedLockType lock (planesLock);
+        planes[(size_t) index] = captured;
+        planeNames[(size_t) index] = message;
+    }
+    sequenceEdited();
+    return true;
+}
+
+void AddSynthProcessor::setPlanesPreset()
+{
+    setLabPreset (true);
+    {
+        const juce::SpinLock::ScopedLockType lock (planesLock);
+        planes = sineLab::defaultPlanes();
+        planeNames = { "harmonic ribbons", "spectral ripples" };
+    }
+    for (const auto& item : std::initializer_list<std::pair<const char*, float>> {
+            { "seqon", 0.0f }, { "planeson", 1.0f }, { "orbithz", 0.18f },
+            { "orbitshape", 0.75f }, { "planemorph", 0.35f }, { "planedepth", 0.9f } })
+    {
+        auto* parameter = apvts.getParameter (item.first);
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (item.second));
+        parameter->endChangeGesture();
+    }
+    sequenceEdited();
+}
+
 void AddSynthProcessor::setLabPreset (bool ambient)
 {
     auto set = [this] (const juce::String& id, float value)
@@ -398,6 +522,7 @@ void AddSynthProcessor::setLabPreset (bool ambient)
         }
     for (int k = 0; k < AddVoice::maxPartials; ++k) set (partialGainID (k), 1.0f);
     set ("seqon", 1.0f); set ("seqrate", ambient ? 6.0f : 0.0f);
+    set ("planeson", 0.0f);
     set ("seqglide", ambient ? 1.0f : 0.12f);
     set ("timeline", 1.0f);
     set ("timespread", ambient ? 0.85f : 0.75f);
@@ -509,6 +634,24 @@ void AddSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
         patterns.appendChild (row, nullptr);
     }
     root.appendChild (patterns, nullptr);
+    juce::ValueTree planeTree ("spectralPlanes");
+    {
+        const juce::SpinLock::ScopedLockType lock (planesLock);
+        for (int index = 0; index < 2; ++index)
+        {
+            juce::ValueTree plane ("plane");
+            plane.setProperty ("name", planeNames[(size_t) index], nullptr);
+            for (int axis = 0; axis < 2; ++axis)
+            {
+                juce::Array<juce::var> values;
+                const auto& basis = axis == 0 ? planes[(size_t) index].u : planes[(size_t) index].v;
+                for (float value : basis) values.add (value);
+                plane.setProperty (axis == 0 ? "u" : "v", juce::var (values), nullptr);
+            }
+            planeTree.appendChild (plane, nullptr);
+        }
+    }
+    root.appendChild (planeTree, nullptr);
     juce::MemoryOutputStream out (dest, false);
     root.writeToStream (out);
 }
@@ -519,6 +662,30 @@ void AddSynthProcessor::setStateInformation (const void* data, int size)
     if (! root.isValid())
         return;
     if (! root.hasType ("AddSynthState") && ! root.hasType ("params")) return;
+    {
+        auto restored = sineLab::defaultPlanes();
+        std::array<juce::String, 2> names { "harmonic ribbons", "spectral ripples" };
+        const auto tree = root.getChildWithName ("spectralPlanes");
+        for (int index = 0; index < juce::jmin (2, tree.getNumChildren()); ++index)
+        {
+            const auto child = tree.getChild (index);
+            const auto u = child.getProperty ("u"), v = child.getProperty ("v");
+            auto* first = u.getArray(); auto* second = v.getArray();
+            if (first == nullptr || second == nullptr || first->size() != sineLab::partials
+                || second->size() != sineLab::partials) continue;
+            sineLab::Mask a, b;
+            for (int k = 0; k < sineLab::partials; ++k)
+            {
+                a[(size_t) k] = (float) (double) first->getReference (k);
+                b[(size_t) k] = (float) (double) second->getReference (k);
+            }
+            restored[(size_t) index] = sineLab::SpectralPlane::fromSpectra (a, b);
+            names[(size_t) index] = child.getProperty ("name", "captured plane").toString();
+        }
+        const juce::SpinLock::ScopedLockType lock (planesLock);
+        planes = restored;
+        planeNames = names;
+    }
     sequence.reset();
     auto patterns = root.getChildWithName ("sequence");
     for (int step = 0; step < juce::jmin (patterns.getNumChildren(), sineLab::steps); ++step)

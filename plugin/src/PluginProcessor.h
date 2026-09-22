@@ -3,6 +3,7 @@
 #include "AddmModel.h"
 #include "MorphField.h"
 #include "Voice.h"
+#include "SpectralPlanes.h"
 
 class AddSynthProcessor : public juce::AudioProcessor
 {
@@ -71,6 +72,12 @@ public:
     int getSequenceStep() const { return sequenceStep.load(); }
     void clearMemory() { clearMemoryRequested.store (true); }
     void setLabPreset (bool ambient);
+    void setPlanesPreset();
+    bool capturePlane (int index, juce::String& message);
+    std::array<sineLab::SpectralPlane, 2> getPlanes() const;
+    juce::String getPlaneName (int index) const;
+    float getPlanePhase() const { return planePhaseDisplay.load(); }
+    float getPlaneLevel (int index) const { return planeDisplay[(size_t) index].load(); }
     void sequenceEdited() { updateHostDisplay (ChangeDetails().withNonParameterStateChanged (true)); }
 
     juce::AudioProcessorValueTreeState apvts;
@@ -86,6 +93,14 @@ private:
     juce::AudioBuffer<float> highAudio { 2, 32 * sineLab::SineOutput::factor };
     juce::MidiBuffer highMidi;
     double sequenceBeat = 0.0;
+    mutable juce::SpinLock planesLock;
+    std::array<sineLab::SpectralPlane, 2> planes { sineLab::defaultPlanes() };
+    std::array<sineLab::SpectralPlane, 2> audioPlanes { sineLab::defaultPlanes() };
+    std::array<juce::String, 2> planeNames { "harmonic ribbons", "spectral ripples" };
+    sineLab::Mask planeSmooth {};
+    std::array<std::atomic<float>, sineLab::partials> planeDisplay {};
+    double planePhase = 0.0;
+    std::atomic<float> planePhaseDisplay { 0.0f };
     std::atomic<int> sequenceStep { -1 };
     std::atomic<bool> clearMemoryRequested { false };
     std::array<std::atomic<float>*, AddVoice::maxPartials> partialGainValues {};
