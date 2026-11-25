@@ -273,6 +273,27 @@ public:
         const float mix = position - (float) first;
         return { juce::jmax (0.0f, work[(size_t) first] * (1.0f - mix) + work[(size_t) first + 1] * mix) / gain, frequency };
     }
+    // Visits every spectral peak in [lowHz, highHz) as (frequency, sine amplitude).
+    template <typename Visit>
+    void peaks (float lowHz, float highHz, Visit&& visit) const
+    {
+        const float binHz = (float) analysisRate / (float) size;
+        const int begin = juce::jmax (1, (int) std::floor (lowHz / binHz));
+        const int end = juce::jmin (size / 2 - 2, (int) std::ceil (highHz / binHz));
+        for (int bin = begin; bin <= end; ++bin)
+        {
+            const float middle = work[(size_t) bin];
+            if (middle <= work[(size_t) bin - 1] || middle < work[(size_t) bin + 1] || middle < 1e-6f * gain) continue;
+            // A parabola through the log magnitudes locates a windowed sine closely.
+            const float left = std::log (work[(size_t) bin - 1] + 1e-20f), centre = std::log (middle);
+            const float right = std::log (work[(size_t) bin + 1] + 1e-20f);
+            const float denominator = left - 2.0f * centre + right;
+            const float delta = denominator < -1e-9f ? juce::jlimit (-.5f, .5f, .5f * (left - right) / denominator) : 0.0f;
+            const float frequency = ((float) bin + delta) * binHz;
+            if (frequency >= lowHz && frequency < highHz)
+                visit (frequency, std::exp (centre - .25f * (left - right) * delta) / gain);
+        }
+    }
 private:
     juce::dsp::FFT fft;
     int size;
@@ -287,6 +308,100 @@ float localRms (const std::vector<float>& samples, int centre, float frequency)
     double energy = 0.0;
     for (int i = begin; i < end; ++i) energy += samples[(size_t) i] * samples[(size_t) i];
     return (float) std::sqrt (energy / juce::jmax (1, end - begin));
+}
+
+// ---- fixed bank for sounds without one clear pitch ------------------------
+// Breaks, loops and mixes have no single fundamental to hang harmonics on.
+// Their partials are spread over the spectrum instead: quarter tones (aligned
+// to A440) where pitch is heard precisely, wider steps above. Every spectral
+// peak feeds the partial nearest to it, so bass lines, chords and drum
+// resonances keep their own pitches and nothing is ever tracked or bent.
+constexpr int bankPartials = 192, bankQuarterTones = 144;
+constexpr float bankReference = 220.0f, bankTop = 16000.0f;
+
+float hannRms (const std::vector<float>& samples, int centre, int length)
+{
+    double energy = 0.0, weight = 0.0;
+    for (int i = 0; i < length; ++i)
+    {
+        const int at = centre + i - length / 2;
+        const double window = .5 - .5 * std::cos (juce::MathConstants<double>::twoPi * (i + .5) / length);
+        weight += window;
+        if (juce::isPositiveAndBelow (at, (int) samples.size()))
+            energy += window * samples[(size_t) at] * samples[(size_t) at];
+    }
+    return (float) std::sqrt (energy / weight);
+}
+
+bool analyzeBank (const std::vector<float>& samples, AddmModel& model, const Progress& progress)
+{
+    std::array<float, bankPartials> centres {};
+    for (int k = 0; k < bankQuarterTones; ++k)
+        centres[(size_t) k] = 440.0f * std::exp2 ((float) (k - 84) / 24.0f);   // from 38.9 Hz
+    const float last = centres[bankQuarterTones - 1];
+    const float step = std::pow (bankTop / last, 1.0f / (float) (bankPartials - bankQuarterTones));
+    for (int k = bankQuarterTones; k < bankPartials; ++k)
+        centres[(size_t) k] = centres[(size_t) k - 1] * step;
+    // Each partial owns the band up to the midpoints towards its neighbours.
+    std::array<float, bankPartials + 1> edges {};
+    edges[0] = centres[0] * std::exp2 (-1.0f / 48.0f);
+    for (int k = 1; k < bankPartials; ++k)
+        edges[(size_t) k] = std::sqrt (centres[(size_t) k - 1] * centres[(size_t) k]);
+    edges[bankPartials] = centres[bankPartials - 1] * std::sqrt (step);
+
+    model.nPartials = bankPartials;
+    model.f0Ref = bankReference;
+    model.env.assign ((size_t) model.nFrames * bankPartials, 0.0f);
+    model.f0Track.assign ((size_t) model.nFrames, 1.0f);
+    model.detune.assign (bankPartials, 1.0f);
+
+    // Long windows resolve close low notes, short ones keep high transients tight.
+    constexpr float lowSplit = 700.0f, highSplit = 1400.0f;
+    Spectrum longSpectrum (12), middleSpectrum (11), shortSpectrum (10);
+    std::array<double, bankPartials> power {}, tuning {}, tuningWeight {};
+    const auto add = [&] (float frequency, float amplitude)
+    {
+        const auto band = std::upper_bound (edges.begin(), edges.end(), frequency) - edges.begin() - 1;
+        if (band < 0 || band >= bankPartials) return;
+        const double energy = (double) amplitude * amplitude;
+        power[(size_t) band] += energy;
+        tuning[(size_t) band] += energy * std::log2 (frequency / centres[(size_t) band]);
+        tuningWeight[(size_t) band] += energy;
+    };
+    for (int frame = 0; frame < model.nFrames; ++frame)
+    {
+        if (! report (progress, .55f + .43f * (float) frame / (float) model.nFrames)) return false;
+        const int centre = frame * hop;
+        power.fill (0.0);
+        longSpectrum.calculate (samples, centre);
+        longSpectrum.peaks (edges.front(), lowSplit, add);
+        middleSpectrum.calculate (samples, centre);
+        middleSpectrum.peaks (lowSplit, highSplit, add);
+        shortSpectrum.calculate (samples, centre);
+        shortSpectrum.peaks (highSplit, edges.back(), add);
+
+        // Match the level of the source over a span short enough to keep
+        // hits sharp but long enough not to follow single bass cycles.
+        double modeledEnergy = 0.0;
+        for (double value : power) modeledEnergy += .5 * value;
+        const float correction = modeledEnergy > 1e-16
+            ? juce::jlimit (0.0f, 4.0f, hannRms (samples, centre, 1024) / (float) std::sqrt (modeledEnergy)) : 0.0f;
+        for (int k = 0; k < bankPartials; ++k)
+            model.env[(size_t) frame * bankPartials + (size_t) k] = correction * (float) std::sqrt (power[(size_t) k]);
+    }
+
+    // Slide each partial onto the energy it actually carried, so sources that
+    // are not tuned to A440 keep their intonation. The engine multiplies the
+    // harmonic number by detune, which lets partials sit anywhere.
+    for (int k = 0; k < bankPartials; ++k)
+    {
+        float frequency = centres[(size_t) k];
+        if (tuningWeight[(size_t) k] > 0.0)
+            frequency *= std::exp2 ((float) (tuning[(size_t) k] / tuningWeight[(size_t) k]));
+        frequency = juce::jlimit (edges[(size_t) k], edges[(size_t) k + 1], frequency);
+        model.detune[(size_t) k] = frequency / (bankReference * (float) (k + 1));
+    }
+    return true;
 }
 }
 
@@ -398,33 +513,36 @@ Result analyze (const juce::File& file, const Progress& progress)
         pitchEnergy[(size_t) frame] = (float) sum;
     }
     const bool pitched = resolvePitchTrack (pitches, pitchEnergy);
-    const float reference = pitched ? median (pitches) : 220.0f;
-    if (! pitched) std::fill (pitches.begin(), pitches.end(), reference);
 
     auto model = std::make_shared<AddmModel>();
     model->name = file.getFileNameWithoutExtension();
     model->controlRate = (float) analysisRate / hop;
     model->nFrames = juce::jmax (2, 1 + (int) (samples.size() - 1) / hop);
-    model->nPartials = juce::jlimit (24, 192, (int) std::lround (16000.0f / reference));
-    model->f0Ref = reference;
-    model->env.resize ((size_t) model->nFrames * (size_t) model->nPartials);
-    model->f0Track.resize ((size_t) model->nFrames);
-    model->detune.assign ((size_t) model->nPartials, 1.0f);
-    std::vector<std::array<SpectralPeak, 8>> strongestPeaks ((size_t) model->nPartials);
-    Spectrum longSpectrum (12), shortSpectrum (10);
-    float previousRms = 0.0f;
-    int lastOnset = 0;
-    for (int frame = 0; frame < model->nFrames; ++frame)
+    if (! pitched)
     {
-        if (! report (progress, .55f + .43f * (float) frame / (float) model->nFrames)) return cancelled();
-        const int coarse = juce::jmin (frame / 4, pitchFrames - 1);
-        const int next = juce::jmin (coarse + 1, pitchFrames - 1);
-        const float mix = (float) (frame % 4) / 4.0f;
-        float frequency = pitches[(size_t) coarse] * (1.0f - mix) + pitches[(size_t) next] * mix;
-        const int centre = frame * hop;
-        longSpectrum.calculate (samples, centre);
-        if (pitched)
+        if (! analyzeBank (samples, *model, progress)) return cancelled();
+    }
+    else
+    {
+        const float reference = median (pitches);
+        model->nPartials = juce::jlimit (24, 192, (int) std::lround (16000.0f / reference));
+        model->f0Ref = reference;
+        model->env.resize ((size_t) model->nFrames * (size_t) model->nPartials);
+        model->f0Track.resize ((size_t) model->nFrames);
+        model->detune.assign ((size_t) model->nPartials, 1.0f);
+        std::vector<std::array<SpectralPeak, 8>> strongestPeaks ((size_t) model->nPartials);
+        Spectrum longSpectrum (12), shortSpectrum (10);
+        float previousRms = 0.0f;
+        int lastOnset = 0;
+        for (int frame = 0; frame < model->nFrames; ++frame)
         {
+            if (! report (progress, .55f + .43f * (float) frame / (float) model->nFrames)) return cancelled();
+            const int coarse = juce::jmin (frame / 4, pitchFrames - 1);
+            const int next = juce::jmin (coarse + 1, pitchFrames - 1);
+            const float mix = (float) (frame % 4) / 4.0f;
+            float frequency = pitches[(size_t) coarse] * (1.0f - mix) + pitches[(size_t) next] * mix;
+            const int centre = frame * hop;
+            longSpectrum.calculate (samples, centre);
             double total = 0.0, weight = 0.0;
             for (int harmonic = 1; harmonic <= 3; ++harmonic)
             {
@@ -433,47 +551,48 @@ Result analyze (const juce::File& file, const Progress& progress)
                 weight += candidate.amplitude;
             }
             if (weight > 1e-8) frequency = juce::jlimit (frequency * .944f, frequency * 1.059f, (float) (total / weight));
+            model->f0Track[(size_t) frame] = frequency;
+            const float rms = localRms (samples, centre, frequency);
+            if (rms > previousRms * 1.8f && rms > .001f) lastOnset = frame;
+            previousRms = rms;
+            const float sinceOnset = (float) (frame - lastOnset) / model->controlRate;
+            const float shortWeight = frequency >= 181.0f ? juce::jlimit (0.0f, 1.0f, (.18f - sinceOnset) / .1f) : 0.0f;
+            if (shortWeight > 0) shortSpectrum.calculate (samples, centre);
+            double modeledEnergy = 0.0;
+            for (int partial = 0; partial < model->nPartials; ++partial)
+            {
+                const float expected = frequency * (float) (partial + 1);
+                const auto candidate = longSpectrum.peak (expected, frequency);
+                float amplitude = candidate.amplitude;
+                if (shortWeight > 0)
+                    amplitude = amplitude * (1.0f - shortWeight) + shortSpectrum.peak (expected, frequency).amplitude * shortWeight;
+                model->env[(size_t) frame * (size_t) model->nPartials + (size_t) partial] = amplitude;
+                modeledEnergy += .5 * amplitude * amplitude;
+                auto& best = strongestPeaks[(size_t) partial];
+                auto weakest = std::min_element (best.begin(), best.end(), [] (auto a, auto b) { return a.amplitude < b.amplitude; });
+                if (candidate.amplitude > weakest->amplitude)
+                    *weakest = { candidate.amplitude, expected > 0 ? candidate.frequency / expected : 1.0f };
+            }
+            const float correction = modeledEnergy > 1e-16 ? juce::jlimit (0.0f, 4.0f, rms / (float) std::sqrt (modeledEnergy)) : 0.0f;
+            for (int partial = 0; partial < model->nPartials; ++partial)
+                model->env[(size_t) frame * (size_t) model->nPartials + (size_t) partial] *= correction;
         }
-        model->f0Track[(size_t) frame] = frequency;
-        const float rms = localRms (samples, centre, frequency);
-        if (rms > previousRms * 1.8f && rms > .001f) lastOnset = frame;
-        previousRms = rms;
-        const float sinceOnset = (float) (frame - lastOnset) / model->controlRate;
-        const float shortWeight = frequency >= 181.0f ? juce::jlimit (0.0f, 1.0f, (.18f - sinceOnset) / .1f) : 0.0f;
-        if (shortWeight > 0) shortSpectrum.calculate (samples, centre);
-        double modeledEnergy = 0.0;
+        model->f0Ref = median (model->f0Track);
+        for (auto& frequency : model->f0Track) frequency /= model->f0Ref;
         for (int partial = 0; partial < model->nPartials; ++partial)
         {
-            const float expected = frequency * (float) (partial + 1);
-            const auto candidate = longSpectrum.peak (expected, frequency);
-            float amplitude = candidate.amplitude;
-            if (shortWeight > 0)
-                amplitude = amplitude * (1.0f - shortWeight) + shortSpectrum.peak (expected, frequency).amplitude * shortWeight;
-            model->env[(size_t) frame * (size_t) model->nPartials + (size_t) partial] = amplitude;
-            modeledEnergy += .5 * amplitude * amplitude;
-            auto& best = strongestPeaks[(size_t) partial];
-            auto weakest = std::min_element (best.begin(), best.end(), [] (auto a, auto b) { return a.amplitude < b.amplitude; });
-            if (candidate.amplitude > weakest->amplitude)
-                *weakest = { candidate.amplitude, expected > 0 ? candidate.frequency / expected : 1.0f };
+            std::vector<float> ratios;
+            for (const auto& value : strongestPeaks[(size_t) partial])
+                if (value.amplitude > 1e-6f) ratios.push_back (value.frequency);
+            if (! ratios.empty()) model->detune[(size_t) partial] = juce::jlimit (.94f, 1.06f, median (ratios));
         }
-        const float correction = modeledEnergy > 1e-16 ? juce::jlimit (0.0f, 4.0f, rms / (float) std::sqrt (modeledEnergy)) : 0.0f;
-        for (int partial = 0; partial < model->nPartials; ++partial)
-            model->env[(size_t) frame * (size_t) model->nPartials + (size_t) partial] *= correction;
-    }
-    if (pitched) model->f0Ref = median (model->f0Track);
-    for (auto& frequency : model->f0Track) frequency /= model->f0Ref;
-    for (int partial = 0; partial < model->nPartials; ++partial)
-    {
-        std::vector<float> ratios;
-        for (const auto& value : strongestPeaks[(size_t) partial])
-            if (value.amplitude > 1e-6f) ratios.push_back (value.frequency);
-        if (! ratios.empty()) model->detune[(size_t) partial] = juce::jlimit (.94f, 1.06f, median (ratios));
     }
     if (std::none_of (model->env.begin(), model->env.end(), [] (float value) { return value > 1e-10f; }))
         return failed ("No usable spectral content was found. Try a different sound or a pitched selection.");
     if (! report (progress, 1.0f)) return cancelled();
     juce::String note;
-    if (! pitched) note = "No stable pitch detected. Used A3 (220 Hz) as the reference.";
+    if (! pitched) note = "No single pitch detected, so its notes were kept as a fixed bank of partials. "
+                          "A3 (220 Hz) is the reference key that plays it at the original pitch.";
     if (channels == 2 && ! useMid) note += (note.isEmpty() ? "" : " ") + juce::String ("Used the stronger channel to avoid stereo cancellation.");
     return { std::move (model), {}, note };
 }

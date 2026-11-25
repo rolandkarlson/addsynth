@@ -23,12 +23,16 @@ appear there too; hover over the status for the full report.
 The importer detects the source pitch and extracts its evolving harmonic
 amplitudes for additive resynthesis. Only a clearly single-pitched sound (one
 voice or instrument, where steady pitch detections carry at least 85% of the
-energy and 75% of the audible frames) has its pitch followed. Drum breaks,
-loops with a bassline, full mixes and noise play at a fixed pitch instead,
-using an A3 / 220 Hz reference that is reported after import; they come out
-as a fixed-pitch harmonic resynthesis and content below about 130 Hz is not
-captured. Models imported before this rule keep their old pitch track until
-the audio is imported again. Stereo sources are mixed to
+energy and 75% of the audible frames) is modelled as harmonics of a followed
+pitch. Drum breaks, loops with a bassline, full mixes and noise are imported
+as a **fixed bank** instead: 192 partials spread from 39 Hz to 16 kHz, in
+quarter tones up to 2.4 kHz and wider steps above, each slid onto the energy
+it actually carried. Bass lines, chords and drum resonances keep their own
+pitches and nothing is tracked or bent. A3 (220 Hz) is the reference key that
+plays a bank at its original pitch; this is reported after import. Morphing a
+bank with a harmonic model moves partials between the two layouts, so the
+in-between positions sound inharmonic. Models imported before this rule keep
+their old data until the audio is imported again. Stereo sources are mixed to
 mono, with the stronger channel used when mixing would cause cancellation.
 Converted models are embedded in the saved plugin state, so reopening a session
 does not require the source audio or an exported `.addm` file. Wait for import

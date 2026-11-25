@@ -223,6 +223,53 @@ void testPitchTrackStability()
     checkImport (std::abs (loopResult.model->f0Ref - 220.0f) < .001f && loopResult.note.contains ("220"),
                  "drum loop must use and disclose the reference pitch");
 
+    // The loop's own notes must survive: a chord that is not tuned to A440,
+    // under noise hits, has to land on partials at its real frequencies.
+    AudioFixture mix;
+    juce::AudioBuffer<float> mixAudio (1, rate * 3);
+    const double chord[] = { 87.9, 233.9, 370.3, 659.9 };   // not a harmonic series
+    for (int i = 0; i < mixAudio.getNumSamples(); ++i)
+    {
+        const double seconds = (double) i / rate;
+        float value = .6f * (2.0f * random.nextFloat() - 1.0f) * (float) std::exp (-std::fmod (seconds, .25) * 8.0);
+        for (double tone : chord)
+            value += .08f * (float) std::sin (juce::MathConstants<double>::twoPi * tone * seconds);
+        mixAudio.setSample (0, i, value);
+    }
+    mix.write (mixAudio, rate);
+    const auto mixResult = audioImport::analyze (mix.file, {});
+    checkImport (mixResult.model != nullptr, "mixed material must import");
+    checkModel (*mixResult.model);
+    const auto& bank = *mixResult.model;
+    checkImport (semitoneRange (bank) < .001f, "mixed material must not get a pitch track");
+    std::vector<float> levels ((size_t) bank.nPartials, 0.0f);
+    for (int frame = 0; frame < bank.nFrames; ++frame)
+        for (int partial = 0; partial < bank.nPartials; ++partial)
+            levels[(size_t) partial] += bank.envAt (frame, partial) / (float) bank.nFrames;
+    const auto partialFrequency = [&bank] (int partial)
+    { return bank.f0Ref * (float) (partial + 1) * bank.detune[(size_t) partial]; };
+    for (double tone : chord)
+    {
+        int nearest = 0;
+        for (int partial = 1; partial < bank.nPartials; ++partial)
+            if (std::abs (std::log (partialFrequency (partial) / tone)) < std::abs (std::log (partialFrequency (nearest) / tone)))
+                nearest = partial;
+        checkImport (std::abs (1200.0 * std::log2 (partialFrequency (nearest) / tone)) < 8.0,
+                     "a note in mixed material must keep its own pitch to within a few cents");
+        checkImport (levels[(size_t) nearest] > .04f && levels[(size_t) nearest] < .14f,
+                     "a note in mixed material must keep its level");
+        for (int other : { nearest - 3, nearest + 3 })
+            checkImport (levels[(size_t) other] < .5f * levels[(size_t) nearest],
+                         "a note in mixed material must stand out from its neighbours");
+    }
+    float lowest = partialFrequency (0), highest = lowest;
+    for (int partial = 1; partial < bank.nPartials; ++partial)
+    {
+        checkImport (partialFrequency (partial) > partialFrequency (partial - 1), "bank partials must ascend");
+        highest = partialFrequency (partial);
+    }
+    checkImport (lowest < 45.0f && highest > 12000.0f, "bank must cover bass through treble");
+
     // A single voice with vibrato and breathy onsets stays pitched and smooth.
     AudioFixture voice;
     juce::AudioBuffer<float> voiceAudio (1, rate * 2);
