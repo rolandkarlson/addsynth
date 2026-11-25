@@ -181,6 +181,89 @@ void testUnpitchedAndShortAudio()
         checkImport (shortResult.error.isNotEmpty(), "unsupported short audio must explain why it failed");
 }
 
+float semitoneRange (const AddmModel& model, float begin = 0.0f, float end = 1.0f)
+{
+    const int first = (int) (begin * (float) model.nFrames);
+    const int last = juce::jmax (first + 1, (int) (end * (float) model.nFrames));
+    const auto range = std::minmax_element (model.f0Track.begin() + first, model.f0Track.begin() + last);
+    return 12.0f * std::log2 (*range.second / *range.first);
+}
+
+void testPitchTrackStability()
+{
+    constexpr int rate = 44100;
+    juce::Random random (0xb4eac);
+
+    // A drum loop: noise hits plus short tonal thumps at unrelated pitches.
+    // Scattered detections must not turn into a wandering pitch track.
+    AudioFixture loop;
+    juce::AudioBuffer<float> loopAudio (1, rate * 4);
+    loopAudio.clear();
+    const double thumps[] = { 62, 148, 97, 233, 71, 190, 118, 82 };
+    for (int hit = 0; hit < 16; ++hit)
+    {
+        const int start = hit * rate / 4;
+        for (int i = 0; i < rate / 5; ++i)
+        {
+            const double seconds = (double) i / rate;
+            float value = (hit % 2 == 1 ? .5f : .15f) * (2.0f * random.nextFloat() - 1.0f)
+                        * (float) std::exp (-seconds * 30.0);
+            if (hit % 2 == 0)
+                value += .6f * (float) (std::sin (juce::MathConstants<double>::twoPi * thumps[hit / 2] * seconds)
+                                        * std::exp (-seconds * 12.0));
+            loopAudio.setSample (0, start + i, value);
+        }
+    }
+    loop.write (loopAudio, rate);
+    const auto loopResult = audioImport::analyze (loop.file, {});
+    checkImport (loopResult.model != nullptr, "drum loop must import");
+    checkModel (*loopResult.model);
+    checkImport (semitoneRange (*loopResult.model) < .001f,
+                 "drum loop must play at a fixed pitch instead of following scattered detections");
+    checkImport (std::abs (loopResult.model->f0Ref - 220.0f) < .001f && loopResult.note.contains ("220"),
+                 "drum loop must use and disclose the reference pitch");
+
+    // A single voice with vibrato and breathy onsets stays pitched and smooth.
+    AudioFixture voice;
+    juce::AudioBuffer<float> voiceAudio (1, rate * 2);
+    double phase = 0.0;
+    for (int i = 0; i < voiceAudio.getNumSamples(); ++i)
+    {
+        const double seconds = (double) i / rate;
+        phase += juce::MathConstants<double>::twoPi * 196.0
+               * std::pow (2.0, .3 * std::sin (juce::MathConstants<double>::twoPi * 5.5 * seconds) / 12.0) / rate;
+        float value = (float) (.3 * std::sin (phase) + .15 * std::sin (2 * phase) + .08 * std::sin (3 * phase));
+        if (std::fmod (seconds, .5) < .02) value = .2f * (2.0f * random.nextFloat() - 1.0f);
+        voiceAudio.setSample (0, i, value);
+    }
+    voice.write (voiceAudio, rate);
+    const auto voiceResult = audioImport::analyze (voice.file, {});
+    checkImport (voiceResult.model != nullptr && voiceResult.note.isEmpty(), "single voice must import as pitched");
+    checkImport (std::abs (voiceResult.model->f0Ref - 196.0f) < 5.0f, "single voice must keep its own pitch");
+    const float vibrato = semitoneRange (*voiceResult.model);
+    checkImport (vibrato > .3f && vibrato < 1.2f, "pitched import must follow vibrato without jumping");
+
+    // Two notes with silence between: hold the first pitch through the gap
+    // rather than gliding across it.
+    AudioFixture notes;
+    juce::AudioBuffer<float> noteAudio (1, rate * 3);
+    noteAudio.clear();
+    for (int i = 0; i < rate; ++i)
+    {
+        const float fade = juce::jmin (1.0f, (float) i / 400.0f, (float) (rate - i) / 400.0f);
+        const double seconds = (double) i / rate;
+        noteAudio.setSample (0, i, .4f * fade * (float) std::sin (juce::MathConstants<double>::twoPi * 220 * seconds));
+        noteAudio.setSample (0, 2 * rate + i, .4f * fade * (float) std::sin (juce::MathConstants<double>::twoPi * 330 * seconds));
+    }
+    notes.write (noteAudio, rate);
+    const auto noteResult = audioImport::analyze (notes.file, {});
+    checkImport (noteResult.model != nullptr && noteResult.note.isEmpty(), "two-note phrase must import as pitched");
+    checkImport (semitoneRange (*noteResult.model, .1f, .55f) < .5f,
+                 "pitch must hold through silence instead of gliding to the next note");
+    const float interval = semitoneRange (*noteResult.model);
+    checkImport (interval > 6.5f && interval < 7.5f, "pitched import must still follow the notes of a phrase");
+}
+
 void testRejectedAndCancelledAudio()
 {
     AudioFixture silence;
@@ -258,6 +341,7 @@ void testAudioImportAnalysis()
     testPitchedAudio();
     testChangingEnvelope();
     testUnpitchedAndShortAudio();
+    testPitchTrackStability();
     testRejectedAndCancelledAudio();
     std::cout << "PASS: native audio pitch, envelopes, stereo, invalid input and cancellation\n";
 }

@@ -14,6 +14,11 @@ constexpr double pitchRate = analysisRate / 4.0;
 constexpr int hop = 256;
 constexpr float minimumPitch = 45.0f, maximumPitch = 2000.0f;
 constexpr double maximumDuration = 60.0;
+// A sound counts as pitched when steady detections carry nearly all of its
+// energy and cover most of its audible frames. Single voices and instruments
+// score above .95 on both; drum breaks, loops with a bassline and full mixes
+// score roughly .0 to .75, and following their scattered pitch sounds broken.
+constexpr float minimumVoicedEnergy = .85f, minimumVoicedFrames = .75f;
 
 bool report (const Progress& progress, float amount)
 {
@@ -143,6 +148,81 @@ private:
     std::array<double, windowSize + 1> energy {};
     std::array<float, 512> difference {};
 };
+
+// Decides whether a single pitch explains the sound and, if so, tidies the
+// track. Drum loops and mixed music only give scattered detections; following
+// those would bend every partial around like a random pitch LFO, so anything
+// that is not clearly one pitched voice gets a fixed reference instead.
+// Returns false (leaving the track untouched) for unpitched material.
+bool resolvePitchTrack (std::vector<float>& pitches, const std::vector<float>& energy)
+{
+    const int count = (int) pitches.size();
+    const auto semitones = [] (float a, float b) { return std::abs (12.0f * std::log2 (a / b)); };
+
+    // Median of the voiced neighbours removes single-frame octave slips.
+    std::vector<float> track (pitches);
+    for (int frame = 0; frame < count; ++frame)
+    {
+        if (pitches[(size_t) frame] <= 0) continue;
+        std::vector<float> nearby;
+        for (int at = juce::jmax (0, frame - 2); at <= juce::jmin (count - 1, frame + 2); ++at)
+            if (pitches[(size_t) at] > 0) nearby.push_back (pitches[(size_t) at]);
+        if (nearby.size() >= 3) track[(size_t) frame] = median (nearby);
+    }
+
+    // Keep only detections that hold together for a few frames.
+    constexpr int minimumRun = 4;
+    for (int begin = 0; begin < count;)
+    {
+        if (track[(size_t) begin] <= 0) { ++begin; continue; }
+        int end = begin + 1;
+        while (end < count && track[(size_t) end] > 0
+               && semitones (track[(size_t) end], track[(size_t) end - 1]) < 1.0f) ++end;
+        if (end - begin < minimumRun) std::fill (track.begin() + begin, track.begin() + end, 0.0f);
+        begin = end;
+    }
+
+    const float loudest = *std::max_element (energy.begin(), energy.end());
+    double total = 0.0, voicedEnergy = 0.0;
+    int active = 0, voicedActive = 0, voicedFrames = 0;
+    for (int frame = 0; frame < count; ++frame)
+    {
+        const bool voiced = track[(size_t) frame] > 0;
+        total += energy[(size_t) frame];
+        if (voiced) { voicedEnergy += energy[(size_t) frame]; ++voicedFrames; }
+        if (energy[(size_t) frame] < .0025f * loudest) continue;   // quieter than 5% of the peak level
+        ++active;
+        if (voiced) ++voicedActive;
+    }
+    if (voicedFrames < minimumRun || total <= 0.0 || active == 0
+        || voicedEnergy < minimumVoicedEnergy * total
+        || (float) voicedActive < minimumVoicedFrames * (float) active)
+        return false;
+
+    // Bridge short gaps smoothly; across longer ones hold the last pitch and
+    // move to the next just before it starts, so silence and noise between
+    // notes do not turn into slow glides.
+    constexpr int bridge = 4, approach = 2;
+    int previous = -1;
+    for (int frame = 0; frame < count; ++frame)
+    {
+        if (track[(size_t) frame] <= 0) continue;
+        const float target = track[(size_t) frame];
+        const float start = previous < 0 ? target : track[(size_t) previous];
+        const int gap = frame - previous - 1;
+        const int ramp = previous < 0 ? 0 : (gap <= bridge ? gap : approach);
+        for (int at = previous + 1; at < frame; ++at)
+        {
+            const int intoRamp = at - (frame - ramp) + 1;
+            track[(size_t) at] = intoRamp <= 0 ? start
+                : start * std::pow (target / start, (float) intoRamp / (float) (ramp + 1));
+        }
+        previous = frame;
+    }
+    std::fill (track.begin() + previous + 1, track.end(), track[(size_t) previous]);
+    pitches = std::move (track);
+    return true;
+}
 
 struct SpectralPeak { float amplitude = 0.0f, frequency = 0.0f; };
 
@@ -305,32 +385,21 @@ Result analyze (const juce::File& file, const Progress& progress)
     }
     PitchDetector detector;
     const int pitchFrames = juce::jmax (2, 1 + (int) pitchSamples.size() / hop);
-    std::vector<float> pitches ((size_t) pitchFrames), voiced;
+    std::vector<float> pitches ((size_t) pitchFrames), pitchEnergy ((size_t) pitchFrames);
     for (int frame = 0; frame < pitchFrames; ++frame)
     {
         if (! report (progress, .38f + .17f * (float) frame / (float) pitchFrames)) return cancelled();
         pitches[(size_t) frame] = detector.estimate (pitchSamples, frame * hop);
-        if (pitches[(size_t) frame] > 0) voiced.push_back (pitches[(size_t) frame]);
+        // Full-band energy under the same span the detector looked at.
+        const int centre = frame * hop * 4;
+        const int begin = juce::jmax (0, centre - 2048), end = juce::jmin ((int) samples.size(), centre + 2048);
+        double sum = 0.0;
+        for (int i = begin; i < end; ++i) sum += samples[(size_t) i] * samples[(size_t) i];
+        pitchEnergy[(size_t) frame] = (float) sum;
     }
-    const bool pitched = voiced.size() >= (size_t) juce::jmin (3, pitchFrames);
-    const float reference = pitched ? median (voiced) : 220.0f;
+    const bool pitched = resolvePitchTrack (pitches, pitchEnergy);
+    const float reference = pitched ? median (pitches) : 220.0f;
     if (! pitched) std::fill (pitches.begin(), pitches.end(), reference);
-    else
-    {
-        int previous = -1;
-        for (int frame = 0; frame < pitchFrames; ++frame)
-            if (pitches[(size_t) frame] > 0)
-            {
-                for (int gap = previous + 1; gap < frame; ++gap)
-                {
-                    const float mix = previous < 0 ? 1.0f : (float) (gap - previous) / (float) (frame - previous);
-                    const float start = previous < 0 ? pitches[(size_t) frame] : pitches[(size_t) previous];
-                    pitches[(size_t) gap] = start + mix * (pitches[(size_t) frame] - start);
-                }
-                previous = frame;
-            }
-        std::fill (pitches.begin() + previous + 1, pitches.end(), pitches[(size_t) previous]);
-    }
 
     auto model = std::make_shared<AddmModel>();
     model->name = file.getFileNameWithoutExtension();
