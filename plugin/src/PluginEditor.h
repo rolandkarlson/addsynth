@@ -48,18 +48,25 @@ public:
 
 // The XY morph pad: model nodes are draggable, double-click removes one,
 // dragging anywhere else moves the morph cursor (morphX/morphY params).
-class MorphPad : public juce::Component, private juce::Timer
+class MorphPad : public juce::Component, public juce::FileDragAndDropTarget,
+                 public juce::SettableTooltipClient, private juce::Timer
 {
 public:
     explicit MorphPad (AddSynthProcessor&);
     void paint (juce::Graphics&) override;
+    void resized() override;
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragEnter (const juce::StringArray&, int, int) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
+    bool selectModels = false;
 
 private:
-    void timerCallback() override { repaint(); }
+    void timerCallback() override;
     int hitNode (juce::Point<float> pos) const;
     juce::Point<float> toPixels (float x, float y) const;
     juce::Point<float> toNorm (juce::Point<float> px) const;
@@ -70,6 +77,8 @@ private:
     juce::RangedAudioParameter& py;
     int draggingNode = -1;
     bool draggingCursor = false;
+    bool fileHover = false;
+    juce::TextButton cancelImport { "cancel" };
 
     static constexpr float nodeRadius = 14.0f;
 };
@@ -179,13 +188,15 @@ private:
     std::array<Control, 6> controls;
 };
 
-class AddSynthEditor : public juce::AudioProcessorEditor
+class AddSynthEditor : public juce::AudioProcessorEditor, public juce::FileDragAndDropTarget
 {
 public:
     explicit AddSynthEditor (AddSynthProcessor&);
     ~AddSynthEditor() override;
     void paint (juce::Graphics&) override;
     void resized() override;
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
 
 private:
     void openModelChooser();

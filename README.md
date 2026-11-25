@@ -2,6 +2,94 @@
 
 by Roland Karlson · Algorytmid
 
+## Sine Lab 2 — model-focused workspace
+
+**AddSynth Sine Lab 2** is a separate instrument (version 0.3.1), alongside
+the original **AddSynth Sine Lab**. It has its own AU/VST3 identifiers and
+standalone app; the original editor and build targets remain available.
+
+The new editor opens at **1380 × 900** and resizes from 1180 × 800 to
+1920 × 1200. The XY pad, selected-model inspector, partial editor and
+modulation routes stay visible on every tab.
+
+Drop an audio file onto the XY pad to turn it into a playable model at that
+position, or use **add sounds...** to choose audio and `.addm` files together.
+Dropping elsewhere in the editor places new models automatically. WAV, AIFF,
+FLAC and Ogg Vorbis are supported, plus formats provided by macOS audio codecs.
+Import accepts mono/stereo clips up to **60 seconds**, at 8–192 kHz. Analysis
+runs in the background with progress and a cancel button on the pad. Errors
+appear there too; hover over the status for the full report.
+
+The importer detects the source pitch and extracts its evolving harmonic
+amplitudes for additive resynthesis. Sounds with no stable detected pitch use
+an A3 / 220 Hz reference, reported after import. Stereo sources are mixed to
+mono, with the stronger channel used when mixing would cause cancellation.
+Converted models are embedded in the saved plugin state, so reopening a session
+does not require the source audio or an exported `.addm` file. Wait for import
+to finish before saving the session.
+
+| Group | Controls | Scope |
+| --- | --- | --- |
+| Selected model | Resynthesized waveform, start, loop in/out, one shot / forward loop, drawable level envelope, drawable partial levels, remove | Only the selected pad node |
+| Morph field and space | XY cursor, model placement, voice spread X/Y/count, stereo width | Shared performance controls |
+| Voice and playback | Attack, decay, sustain, release, scan speed, blur, tempo sync | All models / voices |
+| Tone and pitch | Tilt, odd/even, stretch, partial count, drift, pitch envelope, pitch glide, scale keyboard | Shared sound shaping |
+| Resonance and shared loop | Resonator, ring, damp, common loop position/length, loop sync | Shared voice timeline and resonance |
+| Motion and memory | Eight partial sequence steps, step rate/glide, partial timelines, scatter/reverse, memory/fade | Shared spectral tools |
+| Spectral planes | Enable, orbit speed/shape, plane blend/depth, capture position/gap, capture A/B | Shared spectral tools |
+| Modulation and output | Six source/amount/destination routes, two LFO rates, master gain | Whole instrument |
+
+Click a coloured node to select it without moving the morph cursor. Drag
+the node to reposition it; drag empty pad space to morph. The selected
+node is ringed and its waveform appears in the inspector. Double-clicking
+a node no longer deletes it in version 2; use **remove model**.
+
+The waveform is a cached, normalized sine reconstruction at the model's
+reference pitch, not original source audio (ADDM does not retain source
+phase). Drag the start/in/out markers or enter percentages. Overlapping
+start and loop-in handles are vertically offset: start above, loop-in below.
+
+The inspector's **playback / envelope / partials** buttons switch what the
+plot edits for the selected model:
+
+- **envelope** — drag to draw that model's level (0–100%) over its own
+  timeline, on top of the waveform. It follows the model's source position,
+  so a model loop repeats the drawn contour. Also scales the model's noise.
+- **partials** — drag to draw a level for each of that model's partials. The
+  thin line is the model's own peak spectrum (60 dB scale) for orientation.
+
+Double-click a point or bar to return it to 100%; **reset envelope** /
+**reset partials** clears the whole curve. Both are baked into the morph
+field per model, so they blend with the XY morph, multiply with the shared
+*base levels* editor below, are saved with the session, and (like the
+markers) apply to new notes.
+Each model has independent start and loop settings. Forward loops repeat
+until the voice release fades them out. These settings are saved with the
+session as model state, not DAW automation parameters; edits apply to **new
+notes**. Older sessions default to start 0 and one-shot playback.
+
+The existing shared loop and speed controls still affect the common scan
+timeline; model start/loop mapping is applied within that timeline. Partial
+timelines still supply independent per-partial scan positions. A plane
+capture samples the underlying model spectra, before the per-model playback
+mapping. Global sound and modulation controls retain their parameter IDs.
+
+Build the new version locally, without installing or replacing plugins:
+
+```bash
+cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release -DADDSYNTH_COPY_PLUGIN=OFF
+cmake --build plugin/build --target AddSynthV2_AU AddSynthV2_VST3 AddSynthV2_Standalone -j6
+cmake --build plugin/build --target partials_test model_controls_test audio_import_test ui_snapshot_v2 -j6
+ctest --test-dir plugin/build --output-on-failure
+```
+
+Outputs are under `plugin/build/AddSynthV2_artefacts/Release/`. The original
+targets remain `AddSynth_AU`, `AddSynth_VST3`, and `AddSynth_Standalone`.
+`ui_snapshot_v2` supports `--page 0|1|2` and `--size width height` for UI review.
+The model-controls test covers node selection, per-model editing and recall,
+old-state defaults, persistent panels at all supported sizes, and actual
+start/loop/note-release audio behavior.
+
 ## Sine lab experiment (`codex/sine-playground`)
 
 This branch builds **AddSynth Sine Lab**, with its own AU/VST3 identity and

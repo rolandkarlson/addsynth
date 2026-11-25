@@ -97,7 +97,49 @@ MorphPad::MorphPad (AddSynthProcessor& p)
       px (*p.apvts.getParameter ("morphX")),
       py (*p.apvts.getParameter ("morphY"))
 {
+    addChildComponent (cancelImport);
+    cancelImport.setComponentID ("cancel-import");
+    cancelImport.onClick = [this] { proc.cancelImports(); };
     startTimerHz (30);
+}
+
+void MorphPad::resized()
+{
+    cancelImport.setBounds (getWidth() - 82, getHeight() - 46, 70, 28);
+}
+
+void MorphPad::timerCallback()
+{
+    const auto status = proc.getImportStatus();
+    cancelImport.setVisible (status.busy);
+    setTooltip (status.message);
+    repaint();
+}
+
+bool MorphPad::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (const auto& path : files)
+        if (AddSynthProcessor::canImportFile (juce::File::getCurrentWorkingDirectory().getChildFile (path))) return true;
+    return false;
+}
+
+void MorphPad::fileDragEnter (const juce::StringArray&, int, int)
+{
+    fileHover = true;
+    repaint();
+}
+
+void MorphPad::fileDragExit (const juce::StringArray&)
+{
+    fileHover = false;
+    repaint();
+}
+
+void MorphPad::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    fileHover = false;
+    proc.importFiles (files, toNorm ({ (float) x, (float) y }));
+    timerCallback();
 }
 
 juce::Point<float> MorphPad::toPixels (float x, float y) const
@@ -116,7 +158,7 @@ juce::Point<float> MorphPad::toNorm (juce::Point<float> p) const
 
 int MorphPad::hitNode (juce::Point<float> pos) const
 {
-    auto& slots = proc.getSlots();
+    const auto slots = proc.getSlots();
     for (int i = (int) slots.size() - 1; i >= 0; --i)
         if (toPixels (slots[(size_t) i].x, slots[(size_t) i].y)
                 .getDistanceFrom (pos) <= nodeRadius + 3)
@@ -138,7 +180,7 @@ void MorphPad::paint (juce::Graphics& g)
     g.setColour (theme::ink.withAlpha (0.25f));
     g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
 
-    auto& slots = proc.getSlots();
+    const auto slots = proc.getSlots();
     auto cursor = toPixels (px.getValue(), py.getValue());
 
     // weight visualization: line thickness ~ influence on the cursor
@@ -167,6 +209,13 @@ void MorphPad::paint (juce::Graphics& g)
     {
         auto c = toPixels (slots[i].x, slots[i].y);
         float nr = 8.0f;
+        if (selectModels && proc.getSelectedSlot() == (int) i)
+        {
+            g.setColour (theme::node ((int) i).withAlpha (0.24f));
+            g.fillEllipse (c.x - 17, c.y - 17, 34, 34);
+            g.setColour (theme::ink);
+            g.drawEllipse (c.x - 13, c.y - 13, 26, 26, 1.5f);
+        }
         g.setColour (theme::ink.withAlpha (0.2f));
         g.fillEllipse (c.x - nr, c.y - nr + 1.5f, nr * 2, nr * 2);
         g.setColour (theme::node ((int) i));
@@ -201,8 +250,28 @@ void MorphPad::paint (juce::Graphics& g)
     {
         g.setColour (theme::ink.withAlpha (0.5f));
         g.setFont (theme::font (16.0f));
-        g.drawText ("add models, drag them around, move the circle to morph",
-                    getLocalBounds(), juce::Justification::centred);
+        g.drawFittedText ("drop audio or .addm files here\nthen play a note to hear your sound",
+                         getLocalBounds().reduced (20), juce::Justification::centred, 2);
+    }
+    const auto status = proc.getImportStatus();
+    if (status.message.isNotEmpty())
+    {
+        auto area = getLocalBounds().reduced (8).removeFromBottom (54);
+        g.setColour (theme::pill.withAlpha (0.96f));
+        g.fillRoundedRectangle (area.toFloat(), 7.0f);
+        if (status.busy) area.removeFromRight (78);
+        g.setColour (theme::ink);
+        g.setFont (theme::font (12.0f));
+        auto message = status.message;
+        if (status.busy) message += "  " + juce::String (juce::roundToInt (status.progress * 100.0f)) + "%";
+        g.drawFittedText (message, area.reduced (8, 4), juce::Justification::centredLeft, 2);
+    }
+    if (fileHover)
+    {
+        g.setColour (theme::accent.withAlpha (0.18f));
+        g.fillRoundedRectangle (r.reduced (2), 10.0f);
+        g.setColour (theme::accent.darker (0.3f));
+        g.drawRoundedRectangle (r.reduced (2), 10.0f, 3.0f);
     }
 }
 
@@ -217,6 +286,7 @@ void MorphPad::sendCursor (juce::Point<float> pos, bool gestureStart)
 void MorphPad::mouseDown (const juce::MouseEvent& e)
 {
     draggingNode = hitNode (e.position);
+    if (selectModels && draggingNode >= 0) proc.selectSlot (draggingNode);
     if (draggingNode < 0)
     {
         draggingCursor = true;
@@ -245,6 +315,7 @@ void MorphPad::mouseUp (const juce::MouseEvent&)
 
 void MorphPad::mouseDoubleClick (const juce::MouseEvent& e)
 {
+    if (selectModels) return;
     auto i = hitNode (e.position);
     if (i >= 0)
     {
@@ -627,6 +698,9 @@ SineLabPanel::SineLabPanel (AddSynthProcessor& p, PartialEditor& bars) : proc (p
         control.label.setJustificationType (juce::Justification::centred);
         control.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         control.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 17);
+        control.slider.setColour (juce::Slider::textBoxTextColourId, theme::ink);
+        control.slider.setColour (juce::Slider::textBoxBackgroundColourId, theme::pill);
+        control.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (control.label);
         addAndMakeVisible (control.slider);
         control.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ids[i], control.slider);
@@ -645,6 +719,28 @@ void SineLabPanel::timerCallback()
 
 void SineLabPanel::paint (juce::Graphics& g)
 {
+    if (getWidth() > 600)
+    {
+        g.setColour (theme::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+        g.setColour (theme::ink);
+        g.setFont (theme::font (12.0f, true));
+        const int width = getWidth() / 3;
+        g.drawText ("PARTIAL SEQUENCE", 12, 8, width - 24, 20, juce::Justification::centredLeft);
+        g.drawText ("PARTIAL TIMELINES", width + 12, 8, width - 24, 20, juce::Justification::centredLeft);
+        g.drawText ("SPECTRAL MEMORY", 2 * width + 12, 8, width - 24, 20, juce::Justification::centredLeft);
+        g.setFont (theme::font (11.0f));
+        g.drawText ("select a step; draw its partials below", 12, 115, width - 24, 18, juce::Justification::centredLeft);
+        g.drawText ("independent motion for each partial", width + 12, 66, width - 24, 18, juce::Justification::centredLeft);
+        g.drawText ("released notes leave fading sine layers", 2 * width + 12, 34, width - 24, 18, juce::Justification::centredLeft);
+        const int playing = proc.getSequenceStep();
+        if (playing >= 0)
+        {
+            const auto button = steps[(size_t) playing].getBounds();
+            g.fillEllipse ((float) button.getCentreX() - 2, (float) button.getBottom() + 2, 4, 4);
+        }
+        return;
+    }
     g.setColour (theme::panel);
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
     g.setColour (theme::ink);
@@ -676,6 +772,30 @@ void SineLabPanel::paint (juce::Graphics& g)
 
 void SineLabPanel::resized()
 {
+    if (getWidth() > 600)
+    {
+        const int width = getWidth() / 3;
+        sequenceOn.setBounds (12, 34, 103, 25);
+        rate.setBounds (118, 34, width - 130, 25);
+        base.setBounds (12, 68, 48, 26);
+        for (int i = 0; i < sineLab::steps; ++i)
+            steps[(size_t) i].setBounds (64 + i * (width - 76) / 8, 68, (width - 76) / 8 - 2, 26);
+        auto place = [] (Control& c, juce::Rectangle<int> r)
+        { c.label.setBounds (r.removeFromTop (18)); c.slider.setBounds (r); };
+        controls[0].slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        controls[0].slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 17);
+        place (controls[0], { 12, 133, 84, getHeight() - 139 });
+        glitch.setBounds (104, 134, width - 116, 23);
+        ambient.setBounds (104, 163, width - 116, 23);
+        timelineOn.setBounds (width + 12, 34, width - 24, 25);
+        for (int i = 0; i < 3; ++i)
+            place (controls[(size_t) i + 1], { width + 10 + i * (width - 20) / 3,
+                94, (width - 20) / 3 - 3, juce::jmin (116, getHeight() - 106) });
+        place (controls[4], { width * 2 + 12, 62, (width - 24) / 2, juce::jmin (110, getHeight() - 110) });
+        place (controls[5], { width * 2 + width / 2, 62, (width - 24) / 2, juce::jmin (110, getHeight() - 110) });
+        clear.setBounds (width * 2 + 16, getHeight() - 37, width - 32, 26);
+        return;
+    }
     const int width = getWidth() - 28;
     glitch.setBounds (126, 44, (width - 118) / 2, 26);
     ambient.setBounds (glitch.getRight() + 6, 44, (width - 118) / 2, 26);
@@ -733,6 +853,9 @@ SpectralPlanesPanel::SpectralPlanesPanel (AddSynthProcessor& p) : proc (p)
         control.label.setJustificationType (juce::Justification::centred);
         control.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         control.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 17);
+        control.slider.setColour (juce::Slider::textBoxTextColourId, theme::ink);
+        control.slider.setColour (juce::Slider::textBoxBackgroundColourId, theme::pill);
+        control.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (control.label);
         addAndMakeVisible (control.slider);
         control.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ids[i], control.slider);
@@ -742,6 +865,30 @@ SpectralPlanesPanel::SpectralPlanesPanel (AddSynthProcessor& p) : proc (p)
 
 void SpectralPlanesPanel::paint (juce::Graphics& g)
 {
+    if (getWidth() > 600)
+    {
+        g.setColour (theme::panel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
+        g.setColour (theme::ink);
+        g.setFont (theme::font (12.0f, true));
+        g.drawText ("SPECTRAL PLANES", 12, 8, 160, 22, juce::Justification::centredLeft);
+        g.setFont (theme::font (11.0f));
+        const int width = getWidth() * 2 / 5;
+        g.drawText ("A / " + proc.getPlaneName (0), 12, 68, width - 24, 18, juce::Justification::centredLeft);
+        g.drawText ("B / " + proc.getPlaneName (1), 12, 88, width - 24, 18, juce::Justification::centredLeft);
+        auto plot = juce::Rectangle<float> (12, 116, (float) width - 24, (float) getHeight() - 152);
+        g.setColour (theme::padBg);
+        g.fillRoundedRectangle (plot, 6);
+        g.setColour (theme::accent.darker (0.25f));
+        const float barWidth = plot.getWidth() / sineLab::partials;
+        for (int k = 0; k < sineLab::partials; ++k)
+        {
+            const float height = proc.getPlaneLevel (k) * (plot.getHeight() - 8);
+            g.fillRect (plot.getX() + (float) k * barWidth, plot.getBottom() - 4 - height,
+                        juce::jmax (0.6f, barWidth - 0.5f), juce::jmax (1.0f, height));
+        }
+        return;
+    }
     g.setColour (theme::panel);
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
     g.setColour (theme::ink);
@@ -775,6 +922,24 @@ void SpectralPlanesPanel::paint (juce::Graphics& g)
 
 void SpectralPlanesPanel::resized()
 {
+    if (getWidth() > 600)
+    {
+        const int width = getWidth() * 2 / 5;
+        enabled.setBounds (width - 108, 7, 98, 25);
+        preset.setBounds (12, 36, (width - 32) / 3, 26);
+        captureA.setBounds (16 + (width - 32) / 3, 36, (width - 32) / 3, 26);
+        captureB.setBounds (20 + 2 * (width - 32) / 3, 36, (width - 32) / 3, 26);
+        for (size_t i = 0; i < controls.size(); ++i)
+        {
+            auto cell = juce::Rectangle<int> (width + (int) (i % 3) * (getWidth() - width - 12) / 3,
+                12 + (int) (i / 3) * (getHeight() - 48) / 2,
+                (getWidth() - width - 12) / 3 - 6, (getHeight() - 48) / 2 - 4);
+            controls[i].label.setBounds (cell.removeFromTop (18));
+            controls[i].slider.setBounds (cell);
+        }
+        status.setBounds (12, getHeight() - 29, getWidth() - 24, 20);
+        return;
+    }
     enabled.setBounds (getWidth() - 110, 12, 96, 24);
     const int width = (getWidth() - 36) / 3;
     preset.setBounds (14, 45, width, 27);
@@ -810,7 +975,7 @@ AddSynthEditor::AddSynthEditor (AddSynthProcessor& p)
     viewChoice.onChange = [this] { resized(); };
 
     addAndMakeVisible (addButton);
-    addButton.setButtonText ("add models...");
+    addButton.setButtonText ("add sounds...");
     addButton.onClick = [this] { openModelChooser(); };
 
     addAndMakeVisible (hint);
@@ -942,28 +1107,29 @@ void AddSynthEditor::openModelChooser()
     auto start = proc.getLastModelDir().isDirectory()
                ? proc.getLastModelDir()
                : juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-    chooser = std::make_unique<juce::FileChooser> ("Add additive models",
-                                                   start, "*.addm");
+    chooser = std::make_unique<juce::FileChooser> ("Add audio or models",
+                                                   start, AddSynthProcessor::importWildcards());
     chooser->launchAsync (juce::FileBrowserComponent::openMode
                         | juce::FileBrowserComponent::canSelectFiles
                         | juce::FileBrowserComponent::canSelectMultipleItems,
-        [this] (const juce::FileChooser& fc)
+        [safe = juce::Component::SafePointer<AddSynthEditor> (this)] (const juce::FileChooser& fc)
         {
-            // spread new nodes over preset spots
-            static const float spots[][2] = {
-                { 0.15f, 0.85f }, { 0.85f, 0.85f }, { 0.15f, 0.15f },
-                { 0.85f, 0.15f }, { 0.5f, 0.9f },  { 0.1f, 0.5f },
-                { 0.9f, 0.5f },  { 0.5f, 0.1f },  { 0.35f, 0.65f },
-                { 0.65f, 0.65f }, { 0.35f, 0.35f }, { 0.65f, 0.35f } };
-            for (auto& f : fc.getResults())
-            {
-                auto i = proc.getSlots().size() % (sizeof (spots) / sizeof (spots[0]));
-                juce::String err;
-                if (! proc.addModel (f, spots[i][0], spots[i][1], err))
-                    hint.setText ("load failed: " + err, juce::dontSendNotification);
-            }
-            pad.repaint();
+            if (safe == nullptr) return;
+            juce::StringArray files;
+            for (const auto& file : fc.getResults()) files.add (file.getFullPathName());
+            safe->proc.importFiles (files);
         });
+}
+
+bool AddSynthEditor::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return pad.isInterestedInFileDrag (files);
+}
+
+void AddSynthEditor::filesDropped (const juce::StringArray& files, int, int)
+{
+    viewChoice.setSelectedId (1);
+    proc.importFiles (files);
 }
 
 void AddSynthEditor::paint (juce::Graphics& g)

@@ -1,11 +1,15 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#if ADDSYNTH_V2
+#include "PluginEditorV2.h"
+#endif
 
 static constexpr int kNumVoices = 8;
 
 AddSynthProcessor::AddSynthProcessor()
     : AudioProcessor (BusesProperties()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      juce::Thread ("AddSynth audio import"),
       apvts (*this, nullptr, "params", makeLayout())
 {
     planeSmooth.fill (1.0f);
@@ -20,6 +24,16 @@ AddSynthProcessor::AddSynthProcessor()
         v->setMemory (&spectralMemory);
         synth.addVoice (v);
     }
+}
+
+AddSynthProcessor::~AddSynthProcessor()
+{
+    signalThreadShouldExit();
+    notify();
+    // Analysis checks cancellation between decoding/analysis blocks. Join before
+    // destroying state, and cancel callbacks only after the worker has stopped.
+    stopThread (-1);
+    importUpdater.cancelPendingUpdate();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AddSynthProcessor::makeLayout()
@@ -563,10 +577,11 @@ std::vector<std::pair<float, float>> AddSynthProcessor::getActiveVoiceCursors() 
 
 void AddSynthProcessor::rebuildField()
 {
+    const juce::ScopedLock lock (slotsLock);
     std::vector<MorphField::Placement> placements;
     for (auto& s : slots)
         if (s.model != nullptr)
-            placements.push_back ({ s.model, s.x, s.y });
+            placements.push_back ({ s.model, s.x, s.y, s.playback, s.shape });
     auto newField = MorphField::build (placements);
 
     // notes already playing keep their old snapshot; new notes get this one
@@ -577,42 +592,285 @@ void AddSynthProcessor::rebuildField()
 bool AddSynthProcessor::addModel (const juce::File& f, float x, float y,
                                   juce::String& error)
 {
+    auto model = AddmModel::load (f, error);
+    return model != nullptr && addPreparedModel (f, std::move (model), nullptr, x, y, error);
+}
+
+bool AddSynthProcessor::addPreparedModel (const juce::File& file,
+    std::shared_ptr<const AddmModel> model, std::shared_ptr<const juce::MemoryBlock> embedded,
+    float x, float y, juce::String& error, bool rebuild)
+{
+    const juce::ScopedLock lock (slotsLock);
     if ((int) slots.size() >= MorphField::maxLayers)
     {
         error = "pad is full";
         return false;
     }
-    auto m = AddmModel::load (f, error);
-    if (m == nullptr)
-        return false;
-    slots.push_back ({ f.getFullPathName(), m->name,
+    slots.push_back ({ file.getFullPathName(), model->name,
                        juce::jlimit (0.0f, 1.0f, x),
-                       juce::jlimit (0.0f, 1.0f, y), m });
-    lastModelDir = f.getParentDirectory();
-    rebuildField();
+                       juce::jlimit (0.0f, 1.0f, y), std::move (model), {}, std::move (embedded) });
+    lastModelDir = file.getParentDirectory();
+    selectSlot ((int) slots.size() - 1);
+    if (rebuild)
+    {
+        rebuildField();
+        sequenceEdited();
+    }
     return true;
 }
 
 void AddSynthProcessor::removeSlot (int index)
 {
+    const juce::ScopedLock lock (slotsLock);
     if (index < 0 || index >= (int) slots.size()) return;
     slots.erase (slots.begin() + index);
+    if (selectedSlot > index) --selectedSlot;
+    else if (selectedSlot == index) selectedSlot = juce::jmin (index, (int) slots.size() - 1);
     rebuildField();
+    sequenceEdited();
 }
 
 void AddSynthProcessor::moveSlot (int index, float x, float y)
 {
+    const juce::ScopedLock lock (slotsLock);
     if (index < 0 || index >= (int) slots.size()) return;
     slots[(size_t) index].x = juce::jlimit (0.0f, 1.0f, x);
     slots[(size_t) index].y = juce::jlimit (0.0f, 1.0f, y);
     rebuildField();
+    sequenceEdited();
+}
+
+void AddSynthProcessor::setSlotPlayback (int index, MorphField::Playback playback)
+{
+    const juce::ScopedLock lock (slotsLock);
+    if (! juce::isPositiveAndBelow (index, (int) slots.size())) return;
+    playback.sanitise();
+    slots[(size_t) index].playback = playback;
+    rebuildField();
+    sequenceEdited();
+}
+
+void AddSynthProcessor::setSlotShape (int index, MorphField::Shape shape)
+{
+    const juce::ScopedLock lock (slotsLock);
+    if (! juce::isPositiveAndBelow (index, (int) slots.size())) return;
+    shape.sanitise();
+    slots[(size_t) index].shape = shape;
+    rebuildField();
+    sequenceEdited();
+}
+
+void AddSynthProcessor::selectSlot (int index)
+{
+    const juce::ScopedLock lock (slotsLock);
+    selectedSlot.store (juce::isPositiveAndBelow (index, (int) slots.size()) ? index : -1);
+}
+
+std::vector<AddSynthProcessor::Slot> AddSynthProcessor::getSlots() const
+{
+    const juce::ScopedLock lock (slotsLock);
+    return slots;
+}
+
+juce::File AddSynthProcessor::getLastModelDir() const
+{
+    const juce::ScopedLock lock (slotsLock);
+    return lastModelDir;
+}
+
+bool AddSynthProcessor::canImportFile (const juce::File& file)
+{
+    return file.hasFileExtension ("addm") || audioImport::supports (file);
+}
+
+juce::String AddSynthProcessor::importWildcards()
+{
+    return "*.addm;" + audioImport::supportedWildcards();
+}
+
+AddSynthProcessor::ImportStatus AddSynthProcessor::getImportStatus() const
+{
+    const juce::ScopedLock lock (importLock);
+    return importStatus;
+}
+
+void AddSynthProcessor::cancelImports()
+{
+    const juce::ScopedLock lock (importLock);
+    ++importGeneration;
+    importQueue.clear();
+    importCompletions.clear();
+    pendingImports = 0;
+    importStatus = { "Import cancelled", 0.0f, false };
+    notify();
+}
+
+void AddSynthProcessor::importFiles (const juce::StringArray& files, juce::Point<float> position)
+{
+    if (files.isEmpty()) return;
+    const juce::ScopedLock slotsGuard (slotsLock);
+    const juce::ScopedLock importGuard (importLock);
+    if (pendingImports == 0)
+    {
+        importedCount = 0;
+        importErrors.clear();
+        importNotes.clear();
+    }
+    int added = 0;
+    for (const auto& path : files)
+    {
+        const auto file = juce::File::getCurrentWorkingDirectory().getChildFile (path);
+        if (! canImportFile (file))
+        {
+            importErrors.add (file.getFileName() + ": unsupported file type");
+            continue;
+        }
+        if ((int) slots.size() + pendingImports >= MorphField::maxLayers)
+        {
+            importErrors.add ("Pad is full (16 models). Remove a model to add more.");
+            break;
+        }
+        juce::Point<float> at;
+        if (position.x >= 0.0f && position.y >= 0.0f)
+            at = { juce::jlimit (0.0f, 1.0f, position.x + 0.055f * (float) added),
+                   juce::jlimit (0.0f, 1.0f, position.y - 0.055f * (float) added) };
+        else
+        {
+            const int index = (int) slots.size() + pendingImports;
+            at = { 0.15f + 0.23f * (float) (index % 4), 0.85f - 0.23f * (float) (index / 4) };
+        }
+        importQueue.push_back ({ file, at, importGeneration.load() });
+        ++pendingImports;
+        ++added;
+    }
+    if (pendingImports == 0)
+    {
+        importStatus = { importErrors.joinIntoString ("\n"), 0.0f, false };
+        return;
+    }
+    importStatus = { "Queued " + juce::String (pendingImports) + " sound(s)", 0.0f, true };
+    if (! isThreadRunning() && ! startThread())
+    {
+        importQueue.clear();
+        pendingImports = 0;
+        importStatus = { "Could not start audio import. Please try again.", 0.0f, false };
+    }
+    notify();
+}
+
+void AddSynthProcessor::run()
+{
+    while (! threadShouldExit())
+    {
+        ImportRequest request;
+        bool haveRequest = false;
+        {
+            const juce::ScopedLock lock (importLock);
+            if (! importQueue.empty())
+            {
+                request = std::move (importQueue.front());
+                importQueue.pop_front();
+                haveRequest = true;
+                importStatus.message = "Importing " + request.file.getFileName();
+                importStatus.progress = 0.0f;
+            }
+        }
+        if (! haveRequest) { wait (250); continue; }
+        ImportCompletion completion { request, nullptr, nullptr, {}, {} };
+        try
+        {
+            if (request.file.hasFileExtension ("addm"))
+                completion.model = AddmModel::load (request.file, completion.error);
+            else
+            {
+                auto result = audioImport::analyze (request.file, [this, generation = request.generation] (float progress)
+                {
+                    if (threadShouldExit() || generation != importGeneration.load()) return false;
+                    const juce::ScopedLock lock (importLock);
+                    if (generation != importGeneration.load()) return false;
+                    importStatus.progress = progress;
+                    return true;
+                });
+                completion.model = std::move (result.model);
+                completion.error = result.error;
+                completion.note = result.note;
+                if (completion.model != nullptr)
+                {
+                    completion.embeddedModel = std::make_shared<juce::MemoryBlock>();
+                    juce::MemoryOutputStream output (*completion.embeddedModel, false);
+                    if (! completion.model->write (output))
+                    {
+                        completion.model.reset();
+                        completion.error = "Could not store the converted model";
+                    }
+                }
+            }
+        }
+        catch (const std::exception&)
+        {
+            completion.model.reset();
+            completion.error = "Could not analyze this sound";
+        }
+        bool ready = false;
+        {
+            const juce::ScopedLock lock (importLock);
+            if (! threadShouldExit() && request.generation == importGeneration.load())
+            {
+                importCompletions.push_back (std::move (completion));
+                ready = true;
+            }
+        }
+        // LockingAsyncUpdater waits for an active callback. Never trigger it
+        // while holding a lock that the message-thread callback acquires.
+        if (ready) importUpdater.triggerAsyncUpdate();
+    }
+}
+
+void AddSynthProcessor::handleAsyncUpdate()
+{
+    const juce::ScopedLock slotsGuard (slotsLock);
+    const juce::ScopedLock importGuard (importLock);
+    if (importCompletions.empty()) return;
+    bool changed = false;
+    for (auto& completion : importCompletions)
+    {
+        if (completion.request.generation != importGeneration.load()) continue;
+        bool added = false;
+        if (completion.model != nullptr)
+            added = addPreparedModel (completion.request.file, std::move (completion.model),
+                std::move (completion.embeddedModel), completion.request.position.x,
+                completion.request.position.y, completion.error, false);
+        if (added)
+        {
+            ++importedCount;
+            changed = true;
+            if (completion.note.isNotEmpty()) importNotes.add (completion.request.file.getFileName() + ": " + completion.note);
+        }
+        else importErrors.add (completion.request.file.getFileName() + ": " + completion.error);
+        --pendingImports;
+    }
+    importCompletions.clear();
+    if (changed)
+    {
+        rebuildField();
+        sequenceEdited();
+    }
+    if (pendingImports == 0)
+    {
+        juce::String message = "Imported " + juce::String (importedCount) + " sound(s)";
+        if (! importErrors.isEmpty()) message += "\n" + importErrors.joinIntoString ("\n");
+        if (! importNotes.isEmpty()) message += "\n" + importNotes.joinIntoString ("\n");
+        importStatus = { message, 1.0f, false };
+    }
 }
 
 // ---- state -----------------------------------------------------------------
 
 void AddSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
+    const juce::ScopedLock lock (slotsLock);
     juce::ValueTree root ("AddSynthState");
+    root.setProperty ("selectedSlot", selectedSlot.load(), nullptr);
     root.appendChild (apvts.copyState(), nullptr);
     juce::ValueTree st ("slots");
     for (auto& s : slots)
@@ -621,6 +879,20 @@ void AddSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
         v.setProperty ("path", s.path, nullptr);
         v.setProperty ("x", s.x, nullptr);
         v.setProperty ("y", s.y, nullptr);
+        v.setProperty ("start", s.playback.start, nullptr);
+        v.setProperty ("loopIn", s.playback.loopIn, nullptr);
+        v.setProperty ("loopOut", s.playback.loopOut, nullptr);
+        v.setProperty ("loop", s.playback.loop, nullptr);
+        if (! s.shape.isNeutral())
+        {
+            juce::Array<juce::var> envelope, partialLevels;
+            for (float value : s.shape.envelope) envelope.add (value);
+            for (float value : s.shape.partials) partialLevels.add (value);
+            v.setProperty ("envelope", juce::var (envelope), nullptr);
+            v.setProperty ("partialLevels", juce::var (partialLevels), nullptr);
+        }
+        if (s.embeddedModel != nullptr)
+            v.setProperty ("modelData", juce::var (*s.embeddedModel), nullptr);
         st.appendChild (v, nullptr);
     }
     root.appendChild (st, nullptr);
@@ -662,6 +934,12 @@ void AddSynthProcessor::setStateInformation (const void* data, int size)
     if (! root.isValid())
         return;
     if (! root.hasType ("AddSynthState") && ! root.hasType ("params")) return;
+    const juce::ScopedLock slotsGuard (slotsLock);
+    cancelImports();
+    {
+        const juce::ScopedLock importGuard (importLock);
+        importStatus = {};
+    }
     {
         auto restored = sineLab::defaultPlanes();
         std::array<juce::String, 2> names { "harmonic ribbons", "spectral ripples" };
@@ -711,14 +989,44 @@ void AddSynthProcessor::setStateInformation (const void* data, int size)
         apvts.replaceState (params);
 
     slots.clear();
+    selectedSlot = -1;
     if (slotTree.isValid())
     {
         for (auto v : slotTree)
         {
             juce::File f (v.getProperty ("path").toString());
             juce::String err;
-            addModel (f, (float) v.getProperty ("x", 0.5f),
-                         (float) v.getProperty ("y", 0.5f), err);
+            bool added = false;
+            const auto embedded = v.getProperty ("modelData");
+            const float x = (float) v.getProperty ("x", 0.5f), y = (float) v.getProperty ("y", 0.5f);
+            if (const auto* bytes = embedded.getBinaryData())
+            {
+                juce::MemoryInputStream input (*bytes, false);
+                auto model = AddmModel::read (input, err);
+                if (model != nullptr)
+                    added = addPreparedModel (f, std::move (model),
+                        std::make_shared<juce::MemoryBlock> (*bytes), x, y, err);
+            }
+            else added = addModel (f, x, y, err);
+            if (added)
+            {
+                auto& playback = slots.back().playback;
+                playback.start = (float) v.getProperty ("start", 0.0f);
+                playback.loopIn = (float) v.getProperty ("loopIn", 0.0f);
+                playback.loopOut = (float) v.getProperty ("loopOut", 1.0f);
+                playback.loop = (bool) v.getProperty ("loop", false);
+                playback.sanitise();
+                auto& shape = slots.back().shape;
+                const auto restore = [&v] (const char* name, float* values, int count)
+                {
+                    if (const auto* array = v.getProperty (name).getArray())
+                        for (int i = 0; i < juce::jmin (count, array->size()); ++i)
+                            values[i] = (float) (double) array->getReference (i);
+                };
+                restore ("envelope", shape.envelope.data(), (int) shape.envelope.size());
+                restore ("partialLevels", shape.partials.data(), (int) shape.partials.size());
+                shape.sanitise();
+            }
         }
     }
     else if (params.hasProperty ("modelPath"))  // legacy
@@ -727,12 +1035,17 @@ void AddSynthProcessor::setStateInformation (const void* data, int size)
         addModel (juce::File (params.getProperty ("modelPath").toString()),
                   0.5f, 0.5f, err);
     }
+    selectSlot ((int) root.getProperty ("selectedSlot", slots.empty() ? -1 : 0));
     rebuildField();
 }
 
 juce::AudioProcessorEditor* AddSynthProcessor::createEditor()
 {
+   #if ADDSYNTH_V2
+    return new AddSynthEditorV2 (*this);
+   #else
     return new AddSynthEditor (*this);
+   #endif
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

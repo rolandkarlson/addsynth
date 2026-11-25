@@ -4,11 +4,14 @@
 #include "MorphField.h"
 #include "Voice.h"
 #include "SpectralPlanes.h"
+#include "AudioModelImporter.h"
+#include <deque>
 
-class AddSynthProcessor : public juce::AudioProcessor
+class AddSynthProcessor : public juce::AudioProcessor, private juce::Thread
 {
 public:
     AddSynthProcessor();
+    ~AddSynthProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -21,7 +24,14 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "AddSynth Sine Lab"; }
+    const juce::String getName() const override
+    {
+       #if ADDSYNTH_V2
+        return "AddSynth Sine Lab 2";
+       #else
+        return "AddSynth Sine Lab";
+       #endif
+    }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 120.0; }
@@ -41,13 +51,32 @@ public:
         juce::String path, name;
         float x = 0.5f, y = 0.5f;
         std::shared_ptr<const AddmModel> model;
+        MorphField::Playback playback;
+        std::shared_ptr<const juce::MemoryBlock> embeddedModel;
+        MorphField::Shape shape;
     };
 
     bool addModel (const juce::File& f, float x, float y, juce::String& error);
     void removeSlot (int index);
     void moveSlot (int index, float x, float y);
-    const std::vector<Slot>& getSlots() const { return slots; }
-    juce::File getLastModelDir() const { return lastModelDir; }
+    void setSlotPlayback (int index, MorphField::Playback);
+    void setSlotShape (int index, MorphField::Shape);
+    void selectSlot (int index);
+    int getSelectedSlot() const { return selectedSlot.load(); }
+    std::vector<Slot> getSlots() const;
+    juce::File getLastModelDir() const;
+
+    struct ImportStatus
+    {
+        juce::String message;
+        float progress = 0.0f;
+        bool busy = false;
+    };
+    static bool canImportFile (const juce::File& file);
+    static juce::String importWildcards();
+    void importFiles (const juce::StringArray&, juce::Point<float> position = { -1.0f, -1.0f });
+    void cancelImports();
+    ImportStatus getImportStatus() const;
 
     // effective pad positions of active voices (for the pad's ghost cursors)
     std::vector<std::pair<float, float>> getActiveVoiceCursors() const;
@@ -85,6 +114,33 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
     void rebuildField();
+    bool addPreparedModel (const juce::File&, std::shared_ptr<const AddmModel>,
+                           std::shared_ptr<const juce::MemoryBlock>, float x, float y,
+                           juce::String& error, bool rebuild = true);
+    void run() override;
+    void handleAsyncUpdate();
+
+    struct ImportRequest
+    {
+        juce::File file;
+        juce::Point<float> position;
+        uint64_t generation = 0;
+    };
+    struct ImportCompletion
+    {
+        ImportRequest request;
+        std::shared_ptr<AddmModel> model;
+        std::shared_ptr<juce::MemoryBlock> embeddedModel;
+        juce::String error, note;
+    };
+    mutable juce::CriticalSection importLock;
+    std::deque<ImportRequest> importQueue;
+    std::vector<ImportCompletion> importCompletions;
+    std::atomic<uint64_t> importGeneration { 0 };
+    int pendingImports = 0, importedCount = 0;
+    juce::StringArray importErrors, importNotes;
+    ImportStatus importStatus;
+    juce::LockingAsyncUpdater importUpdater { [this] { handleAsyncUpdate(); } };
 
     juce::Synthesiser synth;
     sineLab::Memory spectralMemory;
@@ -113,6 +169,8 @@ private:
     std::atomic<int> heldMaskDisplay { 0 };
 
     std::vector<Slot> slots;
+    mutable juce::CriticalSection slotsLock;
+    std::atomic<int> selectedSlot { -1 };
     juce::File lastModelDir;
 
     juce::SpinLock fieldLock;

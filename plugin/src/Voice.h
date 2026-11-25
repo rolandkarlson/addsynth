@@ -280,8 +280,8 @@ public:
 
         for (int i = 0; i < num; ++i)
         {
-            int frame = (int) framePos;
-            if (frame >= field->nFrames - 1)
+            int frame = (int) juce::jmin (framePos, (double) field->nFrames - 1);
+            if (frame >= field->nFrames - 1 && ! field->hasModelLoop)
             {
                 if ((params.timelineOn && ! releasing) || (params.modal && params.ring > 0.005f))
                 {
@@ -454,8 +454,10 @@ private:
         // where the envelope will be at the NEXT refresh: interpolate
         // between the two surrounding frames so slow speeds glide
         // smoothly instead of stepping
-        double look = juce::jlimit (0.0, (double) (fld.nFrames - 1),
-                                    framePos + curFrameInc * ctrlCountdown);
+        double look = juce::jmax (0.0, framePos + curFrameInc * ctrlCountdown);
+        if (! fld.hasModelLoop) look = juce::jmin (look, (double) fld.nFrames - 1);
+        const double sampleTime = look;
+        look = juce::jmin (look, (double) fld.nFrames - 1);
         int i0 = (int) look;
         int i1 = juce::jmin (i0 + 1, fld.nFrames - 1);
         float fr = (float) (look - i0);
@@ -479,8 +481,7 @@ private:
         float ratio = 0.0f, B = 0.0f;
         for (size_t li = 0; li < nLayers; ++li)
         {
-            ratio += wts[li] * (fld.layers[li].f0Track[(size_t) i0] * (1.0f - fr)
-                                + fld.layers[li].f0Track[(size_t) i1] * fr);
+            ratio += wts[li] * fld.samplePitch (fld.layers[li], sampleTime);
             B += wts[li] * fld.layers[li].inharmonicity;
         }
         if (ratio <= 0.0f) ratio = 1.0f;
@@ -561,7 +562,7 @@ private:
                 continue;
             }
 
-            int partialI0 = i0, partialI1 = i1;
+            int partialI0 = i0;
             float partialFraction = fr;
             if (params.timelineOn)
             {
@@ -576,7 +577,6 @@ private:
                     + (direction < 0.0 ? 1.0 : 0.0)) * last;
                 const double at = sineLab::reflectedFrame (partialPosition[(size_t) k] + offset, last);
                 partialI0 = (int) at;
-                partialI1 = juce::jmin (partialI0 + 1, fld.nFrames - 1);
                 partialFraction = (float) (at - partialI0);
             }
             else
@@ -584,8 +584,8 @@ private:
 
             float acc = 0.0f;
             for (size_t li = 0; li < nLayers; ++li)
-                acc += wts[li] * (fld.logEnvAt (fld.layers[li], partialI0, k) * (1.0f - partialFraction)
-                                  + fld.logEnvAt (fld.layers[li], partialI1, k) * partialFraction);
+                acc += wts[li] * fld.sampleEnvelope (fld.layers[li], params.timelineOn
+                    ? partialI0 + (double) partialFraction : sampleTime, k);
             float tgt = std::exp (acc) - MorphField::EPS;
             if (tgt < 0.0f) tgt = 0.0f;
 

@@ -112,7 +112,8 @@ static void testOutputFilter()
 
 struct Fixture
 {
-    juce::TemporaryFile file;
+    juce::TemporaryFile file { juce::File::getCurrentWorkingDirectory()
+        .getNonexistentChildFile ("sine-lab-test", ".addm") };
     Fixture()
     {
         juce::DynamicObject::Ptr header = new juce::DynamicObject();
@@ -124,6 +125,7 @@ struct Fixture
         header->setProperty ("f0_ref", 55.0);
         auto json = juce::JSON::toString (juce::var (header.get()), true);
         juce::FileOutputStream out (file.getFile());
+        check (out.openedOk(), "cannot write lab test fixture in working directory");
         out.write ("ADDM", 4); out.writeInt (2);
         out.writeInt ((int) json.getNumBytesAsUTF8());
         out.write (json.toRawUTF8(), json.getNumBytesAsUTF8());

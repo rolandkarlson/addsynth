@@ -1,5 +1,6 @@
 // Renders the plugin editor offscreen to a PNG (UI review without a DAW).
-// usage: ui_snapshot [--glitch|--ambient|--planes] [--render out.wav] [models...] out.png
+// usage: ui_snapshot [--glitch|--ambient|--planes] [--page n] [--model-view n] [--size w h]
+//        [--render out.wav] [models...] out.png
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../src/PluginProcessor.h"
 #include "../src/PluginEditor.h"
@@ -13,6 +14,7 @@ int main (int argc, char** argv)
     proc.setRateAndBufferSizeDetails (44100.0, 512);
     proc.prepareToPlay (44100.0, 512);
     int preset = -1;
+    int page = 0, width = 0, height = 0, modelView = 0;
     juce::String audioPath;
 
     static const float spots[][2] = { { 0.2f, 0.72f }, { 0.78f, 0.8f },
@@ -25,13 +27,27 @@ int main (int argc, char** argv)
         if (arg == "--ambient") { preset = 1; continue; }
         if (arg == "--planes") { preset = 2; continue; }
         if (arg == "--render" && i + 1 < argc - 1) { audioPath = argv[++i]; continue; }
+        if (arg == "--page" && i + 1 < argc - 1) { page = juce::String (argv[++i]).getIntValue(); continue; }
+        if (arg == "--model-view" && i + 1 < argc - 1) { modelView = juce::String (argv[++i]).getIntValue(); continue; }
+        if (arg == "--size" && i + 2 < argc - 1)
+        { width = juce::String (argv[++i]).getIntValue(); height = juce::String (argv[++i]).getIntValue(); continue; }
         if (mi >= 4) continue;
-        juce::String err;
         auto f = juce::File::getCurrentWorkingDirectory().getChildFile (argv[i]);
-        if (proc.addModel (f, spots[mi][0], spots[mi][1], err))
+        if (AddSynthProcessor::canImportFile (f))
+        {
+            proc.importFiles ({ f.getFullPathName() }, { spots[mi][0], spots[mi][1] });
             ++mi;
+        }
         else
-            std::cerr << "skip " << argv[i] << ": " << err << "\n";
+            std::cerr << "skip " << argv[i] << ": unsupported file type\n";
+    }
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 30000;
+    while (proc.getImportStatus().busy && juce::Time::getMillisecondCounterHiRes() < deadline)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    if (proc.getImportStatus().busy || (mi > 0 && proc.getSlots().empty()))
+    {
+        std::cerr << "import failed: " << proc.getImportStatus().message << '\n';
+        return 1;
     }
 
     // dress the UI a little: C minor pentatonic + cursor off-center
@@ -88,6 +104,25 @@ int main (int argc, char** argv)
     }
 
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
+    if (width > 0 && height > 0) ed->setSize (width, height);
+    for (auto* child : ed->getChildren())
+        if (child->getComponentID() == "workspace-tab-" + juce::String (page))
+            if (auto* button = dynamic_cast<juce::TextButton*> (child)) button->onClick();
+    if (modelView > 0 && ! proc.getSlots().empty())
+    {
+        // Sculpt the first model so the per-model editors have something to show.
+        MorphField::Shape shape;
+        for (size_t i = 0; i < shape.envelope.size(); ++i)
+            shape.envelope[i] = juce::jmin (1.0f, (float) i / 8.0f) * (1.0f - 0.8f * (float) i / 63.0f);
+        for (size_t k = 0; k < shape.partials.size(); ++k)
+            shape.partials[k] = k % 2 == 1 ? 0.35f : 1.0f - 0.5f * (float) k / 191.0f;
+        proc.selectSlot (0);
+        proc.setSlotShape (0, shape);
+        if (auto* inspector = ed->findChildWithID ("model-inspector"))
+            if (auto* button = dynamic_cast<juce::TextButton*> (
+                    inspector->findChildWithID ("model-view-" + juce::String (modelView))))
+                button->onClick();
+    }
     auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
 
     auto out = juce::File::getCurrentWorkingDirectory()
