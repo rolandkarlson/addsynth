@@ -19,7 +19,7 @@ jobs:
         run: cmake -B plugin/build -S plugin -A x64 -DADDSYNTH_COPY_PLUGIN=OFF
 
       - name: build
-        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_Standalone partials_test
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_Standalone AddSynthV2_VST3 AddSynthV2_Standalone partials_test model_controls_test audio_import_test
 
       - name: test sine lab
         run: ctest --test-dir plugin/build -C Release --output-on-failure
@@ -30,17 +30,23 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item -Recurse "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth Sine Lab.vst3" dist/
           Copy-Item "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth Sine Lab.exe" dist/
+          Copy-Item -Recurse "plugin/build/AddSynthV2_artefacts/Release/VST3/AddSynth Sine Lab 2.vst3" dist/
+          Copy-Item "plugin/build/AddSynthV2_artefacts/Release/Standalone/AddSynth Sine Lab 2.exe" dist/
           if (Test-Path models) { Copy-Item -Recurse models dist/ }
           @"
           AddSynth Sine Lab (Windows)
           ==================
-          1. Copy the AddSynth Sine Lab.vst3 FOLDER into:
+          Two plugins are included: "AddSynth Sine Lab 2" (new editor, audio
+          import, per-model playback / envelope / partials) and the original
+          "AddSynth Sine Lab". They can be installed side by side.
+          1. Copy the .vst3 FOLDERS into:
              C:\Program Files\Common Files\VST3\
           2. Rescan plugins in your DAW (Ableton: Options > Preferences >
-             Plug-Ins > Rescan). Find "AddSynth Sine Lab" by Algorytmid.
-          AddSynth Sine Lab.exe runs standalone without a DAW (pick your audio/MIDI
-          device in its options button).
-          Click "add models..." and load .addm model files.
+             Plug-Ins > Rescan). Find them under Algorytmid.
+          The .exe files run standalone without a DAW (pick your audio/MIDI
+          device in the options button).
+          Sine Lab 2: drop audio onto the XY pad or click "add sounds...".
+          Sine Lab: click "add models..." and load .addm model files.
           "@ | Set-Content dist/README.txt
 
       - uses: actions/upload-artifact@v4
@@ -67,7 +73,7 @@ jobs:
         run: cmake -B plugin/build -S plugin -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DADDSYNTH_COPY_PLUGIN=OFF
 
       - name: build
-        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_AU AddSynth_Standalone partials_test -j3
+        run: cmake --build plugin/build --config Release --target AddSynth_VST3 AddSynth_AU AddSynth_Standalone AddSynthV2_VST3 AddSynthV2_AU AddSynthV2_Standalone partials_test model_controls_test audio_import_test -j3
 
       - name: test sine lab
         run: ctest --test-dir plugin/build -C Release --output-on-failure
@@ -78,6 +84,9 @@ jobs:
           cp -R "plugin/build/AddSynth_artefacts/Release/VST3/AddSynth Sine Lab.vst3" dist/
           cp -R "plugin/build/AddSynth_artefacts/Release/AU/AddSynth Sine Lab.component" dist/
           cp -R "plugin/build/AddSynth_artefacts/Release/Standalone/AddSynth Sine Lab.app" dist/
+          cp -R "plugin/build/AddSynthV2_artefacts/Release/VST3/AddSynth Sine Lab 2.vst3" dist/
+          cp -R "plugin/build/AddSynthV2_artefacts/Release/AU/AddSynth Sine Lab 2.component" dist/
+          cp -R "plugin/build/AddSynthV2_artefacts/Release/Standalone/AddSynth Sine Lab 2.app" dist/
           [ -d models ] && cp -R models dist/ || true
 
       - uses: actions/upload-artifact@v4
